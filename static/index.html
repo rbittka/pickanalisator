@@ -120,6 +120,31 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .loading { opacity: .55; transition: opacity .15s; }
 
 .best { margin-top: 16px; }
+.dr { margin-top: 16px; }
+.dr-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; justify-content: space-between; }
+.dr-head h2 { margin: 0; }
+.dr-verdict { font-weight: 700; font-size: 16px; }
+.dr-verdict.good { color: var(--pos); } .dr-verdict.bad { color: var(--neg); } .dr-verdict.even { color: var(--accent); }
+.dr-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 10px; }
+@media (max-width: 760px) { .dr-grid { grid-template-columns: 1fr; } }
+.dr h3 { font-size: 12px; color: var(--muted); font-weight: 500; margin: 0 0 6px; }
+.dr-phase { display: grid; grid-template-columns: 120px 1fr 64px; gap: 8px; align-items: center; font-size: 12px; padding: 3px 0; }
+.dr-phase .sub { color: var(--muted); font-size: 11px; display: block; }
+.dr-bar { position: relative; height: 8px; background: var(--panel2); border-radius: 4px; }
+.dr-bar::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--line); }
+.dr-bar div { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+.dr-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.dr-table th, .dr-table td { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: right; }
+.dr-table th:first-child, .dr-table td:first-child { text-align: left; }
+.dr-table th { color: var(--muted); font-weight: 500; }
+.scroll { overflow-x: auto; }
+.dr-notes { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 13px; }
+.dr-notes li { padding-left: 22px; position: relative; }
+.dr-notes li::before { position: absolute; left: 0; font-weight: 700; }
+.dr-notes li.plus::before { content: "✓"; color: var(--pos); }
+.dr-notes li.minus::before { content: "!"; color: var(--neg); left: 4px; }
+.dr-notes li.info::before { content: "i"; color: var(--accent); left: 4px; }
+.phase-tag { font-size: 11px; color: var(--accent); }
 .best-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 @media (max-width: 760px) { .best-list { grid-template-columns: 1fr; } }
 .pick { display: flex; flex-direction: column; gap: 8px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-width: 0; }
@@ -194,6 +219,15 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       <div class="bans" id="bans"></div>
       <div class="adv" id="adv"></div>
       <div class="note">Клик по герою в драфте — подобрать ему замену, × — убрать из драфта.</div>
+    </div>
+
+    <div class="panel dr" id="draftPanel" hidden>
+      <div class="dr-head"><h2>Разбор драфта</h2><span class="dr-verdict" id="drVerdict"></span></div>
+      <div class="dr-grid">
+        <div><h3>Фазы игры</h3><div id="drPhases"></div></div>
+        <div><h3>Состав</h3><div class="scroll"><table class="dr-table" id="drAspects"></table></div></div>
+      </div>
+      <ul class="dr-notes" id="drNotes"></ul>
     </div>
 
     <div class="panel best" id="best" hidden>

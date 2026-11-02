@@ -33,6 +33,11 @@ MAX_HERO_ID = 1000  # id героев в Dota сейчас до ~150; от не�
 MAX_PORTRAIT_BYTES = 2 * 1024 * 1024
 MAX_PORTRAIT_SIDE = 2000
 PUBLIC_ERROR = "Источник статистики временно недоступен"
+PROFILE_FILE = "profiles.json"
+# Фазы игры по длительности матча: ранняя (до 30 мин), средняя (30–45), поздняя (45+).
+PHASE_EDGES = (30 * 60, 45 * 60)
+# Средние за игру по разобранным матчам: контроль, строения, урон, лечение, Рошан.
+PROFILE_FIELDS = ("stuns", "tower_damage", "hero_damage", "hero_healing", "roshans_killed")
 _NPC = re.compile(r"[a-z0-9_]{1,64}")
 _API_KEY = re.compile(r"api_key=[^&\s\"']+")
 
@@ -54,9 +59,11 @@ def _valid_hero(h: "Hero") -> bool:
 
 
 def _valid_match(m) -> bool:
-    """Матч из OpenDota или кэша: [match_id, start_time, radiant_win, radiant, dire]."""
+    """Матч из OpenDota или кэша: [match_id, start_time, radiant_win, radiant, dire, duration]."""
     try:
         teams = (m[3], m[4])
+        if not isinstance(m[5], int):
+            return False
         return all(isinstance(t, list) and len(t) == 5 and all(_valid_hero_id(i) for i in t) for t in teams)
     except (TypeError, IndexError, KeyError):
         return False
@@ -85,6 +92,9 @@ class Stats:
     first_match_time: int = 0
     last_match_time: int = 0
     by_name: dict[str, Hero] = field(default_factory=dict)
+    phase_games: np.ndarray | None = None  # [hero, фаза] игр по длительности матча
+    phase_wins: np.ndarray | None = None
+    profile: dict[int, dict] = field(default_factory=dict)  # средние за игру, см. PROFILE_FIELDS
 
     def winrate(self, hero_id: int) -> float:
         g = self.games[hero_id]
@@ -214,7 +224,7 @@ async def fetch_matches(client: httpx.AsyncClient, known: list[list]) -> list[li
         lo = max(hi - CHUNK_IDS, floor_id)
         rows = await _explorer(
             client,
-            f"""select match_id, start_time, radiant_win, radiant_team, dire_team
+            f"""select match_id, start_time, radiant_win, radiant_team, dire_team, duration
                 from public_matches
                 where match_id > {lo} and match_id <= {hi}
                   and avg_rank_tier >= {config.MIN_RANK}
@@ -222,7 +232,7 @@ async def fetch_matches(client: httpx.AsyncClient, known: list[list]) -> list[li
         )
         fresh += [
             m for m in (
-                [r["match_id"], r["start_time"], bool(r["radiant_win"]), r["radiant_team"], r["dire_team"]]
+                [r["match_id"], r["start_time"], bool(r["radiant_win"]), r["radiant_team"], r["dire_team"], r["duration"]]
                 for r in rows
             )
             if _valid_match(m)
@@ -246,13 +256,18 @@ def aggregate(heroes: dict[int, Hero], matches: list[list]) -> Stats:
     vs_w = np.zeros((n, n), np.int64)
     w_g = np.zeros((n, n), np.int64)
     w_w = np.zeros((n, n), np.int64)
+    p_g = np.zeros((n, 3), np.int64)
+    p_w = np.zeros((n, 3), np.int64)
     if matches:
+        phase = np.searchsorted(PHASE_EDGES, np.array([m[5] for m in matches]), side="right")
         rad = np.array([m[3] for m in matches], np.int64)
         dire = np.array([m[4] for m in matches], np.int64)
         rw = np.array([m[2] for m in matches], np.int64)
         for team, other, won in ((rad, dire, rw), (dire, rad, 1 - rw)):
             np.add.at(games, team.ravel(), 1)
             np.add.at(wins, team.ravel(), np.repeat(won, 5))
+            np.add.at(p_g, (team.ravel(), np.repeat(phase, 5)), 1)
+            np.add.at(p_w, (team.ravel(), np.repeat(phase, 5)), np.repeat(won, 5))
             # Каждый герой команды против каждого героя соперника.
             a = np.repeat(team, 5, axis=1).ravel()
             b = np.tile(other, (1, 5)).ravel()
@@ -270,7 +285,28 @@ def aggregate(heroes: dict[int, Hero], matches: list[list]) -> Stats:
         with_games=w_g, with_wins=w_w, matches=len(matches), updated=time.time(),
         first_match_time=min(times, default=0), last_match_time=max(times, default=0),
         by_name={h.name.lower(): h for h in heroes.values()},
+        phase_games=p_g, phase_wins=p_w,
     )
+
+
+async def fetch_profiles(client: httpx.AsyncClient) -> dict[int, dict]:
+    """Средние за игру по героям из разобранных публичных матчей примерно за два месяца."""
+    latest = int((await _explorer(client, "select max(match_id) as id from public_matches"))[0]["id"])
+    cols = ", ".join(f"avg({f}) {f}" for f in PROFILE_FIELDS)
+    rows = await _explorer(
+        client,
+        f"""select hero_id, count(*) n, {cols} from player_matches
+            where match_id > {latest - 85_000_000} and stuns is not null group by hero_id""",
+    )
+    out = {}
+    for r in rows:
+        try:
+            hid, n = int(r["hero_id"]), int(r["n"])
+            if _valid_hero_id(hid) and n >= 30:  # по меньшей выборке оценка слишком шумная
+                out[hid] = {"n": n, **{f: round(float(r[f] or 0), 3) for f in PROFILE_FIELDS}}
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
 
 
 class Store:
@@ -304,8 +340,33 @@ class Store:
         cached = self._load_cache()
         if cached:
             self.stats = aggregate(*cached)
+            self.stats.profile = self._load_profiles(max_age=None) or {}
             self.stats.updated = (config.DATA_DIR / MATCHES_FILE).stat().st_mtime
             log.info("Кэш: %d матчей", self.stats.matches)
+
+    def _load_profiles(self, max_age: float | None = 86400) -> dict[int, dict] | None:
+        p = config.DATA_DIR / PROFILE_FILE
+        if not p.exists() or (max_age and time.time() - p.stat().st_mtime > max_age):
+            return None
+        try:
+            return {int(k): v for k, v in json.loads(p.read_text()).items()}
+        except (ValueError, AttributeError):
+            return None
+
+    async def _profiles(self, client: httpx.AsyncClient) -> dict[int, dict]:
+        """Профили героев: раз в сутки; при сбое OpenDota — прошлые, если есть."""
+        fresh = self._load_profiles()
+        if fresh:
+            return fresh
+        try:
+            profiles = await fetch_profiles(client)
+            if profiles:
+                config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+                (config.DATA_DIR / PROFILE_FILE).write_text(json.dumps(profiles))
+                return profiles
+        except Exception as e:
+            log.warning("Профили героев не обновились: %s: %s", type(e).__name__, _redact(str(e)))
+        return self._load_profiles(max_age=None) or {}
 
     async def refresh(self) -> None:
         async with self._lock:
@@ -314,7 +375,9 @@ class Store:
                 async with _client() as client:
                     heroes = await fetch_heroes(client)
                     matches = await fetch_matches(client, cached[1] if cached else [])
+                    profiles = await self._profiles(client)
                 stats = await asyncio.to_thread(aggregate, heroes, matches)
+                stats.profile = profiles
                 await asyncio.to_thread(self._save_cache, heroes, matches)
                 self.stats, self.error = stats, None
                 log.info("Статистика обновлена: %d матчей", stats.matches)

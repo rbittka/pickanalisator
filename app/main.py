@@ -14,7 +14,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import analysis, config, scoring, steam
+from . import analysis, config, draft, scoring, steam
 from .data import Stats, Store, portrait_path
 from .limits import SlidingWindow, client_ip
 from .recognize import BadImage, References, build_references, match_top_bar, normalize, open_image
@@ -220,9 +220,12 @@ def analyze(body: AnalyzeIn, request: Request):
     if current:
         for r in recs + pool_recs:
             r["delta"] = r["score"] - current["score"]
+    for r in recs + pool_recs + ([current] if current else []):
+        r["strong_phase"] = draft.strongest_phase(draft.hero_phases(s, r["id"]))
     return {
         "recommendations": recs,
         "pool_recommendations": pool_recs,
+        "draft": draft.analyze_draft(s, ally, enemy),
         "current": current,
         "advantage": scoring.draft_advantage(s, ally, enemy),
     }

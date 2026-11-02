@@ -115,7 +115,7 @@ function recCard(r, i, current) {
         ${heroImg(h)}
         <div class="info">
           <div class="name">${esc(r.name)}</div>
-          <div class="sub">${r.pos} · ${POS_NAMES[r.pos]} · WR ${(r.winrate * 100).toFixed(1)}% (${r.games.toLocaleString('ru-RU')} игр)</div>
+          <div class="sub">${r.pos} · ${POS_NAMES[r.pos]} · WR ${(r.winrate * 100).toFixed(1)}% (${r.games.toLocaleString('ru-RU')} игр) ${phaseTag(r)}</div>
           <div class="sub">контр <span class="${cls(r.counter)}">${pp(r.counter)}</span> ·
             синергия <span class="${cls(r.synergy)}">${pp(r.synergy)}</span> ·
             мета <span class="${cls(r.meta)}">${pp(r.meta)}</span></div>
@@ -198,6 +198,7 @@ function fillPicks(sel, list, badge) {
           ${i ? '' : `<div class="pick-badge">${badge}</div>`}
           <div class="name">${esc(r.name)}</div>
           <div class="sub">${r.pos} · ${POS_NAMES[r.pos]}</div>
+          ${phaseTag(r)}
           ${lvl || myStat(r.id) ? `<div class="pick-level">★ ${[lvl ? `уровень ${lvl}` : '', myStat(r.id)].filter(Boolean).join(' · ')}</div>` : ''}
         </div>
       </div>
@@ -222,6 +223,34 @@ function renderPool() {
       <label>ур. <input type="number" min="1" max="30" value="${p.level || ''}" placeholder="—" data-level="${p.id}" aria-label="Уровень ${esc(h.name)}"></label>
       <button type="button" class="x" data-drop="${p.id}" aria-label="Убрать ${esc(h.name)} из пула">×</button></div>`;
   }).join('');
+}
+
+const PHASE_NAMES = { early: 'ранней игре', mid: 'середине игры', late: 'поздней игре' };
+const phaseTag = (r) => (r.strong_phase ? `<span class="phase-tag">сильнее в ${PHASE_NAMES[r.strong_phase]}</span>` : '');
+
+function renderDraft(d) {
+  $('#draftPanel').hidden = !d;
+  if (!d) return;
+  $('#drVerdict').className = `dr-verdict ${d.verdict}`;
+  $('#drVerdict').textContent = `${d.headline} · ${pp(d.advantage)} п.п.`;
+  // Полоса от середины: вправо — сильнее мы, влево — противник.
+  $('#drPhases').innerHTML = d.phases.map((p) => {
+    const diff = p.ally - p.enemy;
+    const width = Math.min(50, Math.abs(diff) * 100 * 5);
+    const bar = diff >= 0
+      ? `<div style="left:50%;width:${width}%;background:var(--ally)"></div>`
+      : `<div style="right:50%;width:${width}%;background:var(--enemy)"></div>`;
+    const who = Math.abs(diff) < 0.01 ? 'равно' : diff > 0 ? 'сильнее вы' : 'сильнее они';
+    return `<div class="dr-phase"><span>${esc(p.label)}<span class="sub">${esc(p.minutes)}</span></span>
+      <div class="dr-bar">${bar}</div><span class="${Math.abs(diff) < 0.01 ? '' : cls(diff)}">${who}</span></div>`;
+  }).join('');
+  const fmt = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}к` : `${v}`);
+  $('#drAspects').innerHTML = d.aspects.length
+    ? '<tr><th></th><th>Вы</th><th>Противник</th><th>Обычно</th></tr>' + d.aspects.map((a) =>
+      `<tr><td title="${esc(a.unit)}">${esc(a.label)}</td><td class="${a.ally >= a.enemy ? 'p' : ''}">${fmt(a.ally)}</td>
+        <td class="${a.enemy > a.ally ? 'n' : ''}">${fmt(a.enemy)}</td><td class="k">${fmt(a.typical_team)}</td></tr>`).join('')
+    : '<tr><td class="k">Профили героев ещё загружаются</td></tr>';
+  $('#drNotes').innerHTML = d.notes.map((n) => `<li class="${n.kind}">${esc(n.text)}</li>`).join('');
 }
 
 function renderAdvantage(adv) {
@@ -252,6 +281,7 @@ async function runAnalyze() {
     if (seq !== analyzeSeq) return;
     renderRecs(res);
     renderBest(res);
+    renderDraft(res.draft);
     renderAdvantage(res.advantage);
   } catch (e) {
     if (seq === analyzeSeq) $('#recs').innerHTML = `<div class="empty">${esc(e.message)}</div>`;

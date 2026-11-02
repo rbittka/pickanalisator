@@ -54,10 +54,10 @@ def test_load_cache_skips_bad_heroes_and_matches(tmp_path, monkeypatch):
     }
     (tmp_path / data.HEROES_FILE).write_text(json.dumps(heroes))
     matches = [
-        [1, 100, True, [1, 2, 3, 4, 5], [6, 7, 8, 9, 10]],
-        [2, 100, True, [1, 2, 3, 4, 100000], [6, 7, 8, 9, 10]],
-        [3, 100, True, [1, 2, 3, 4], [6, 7, 8, 9, 10]],
-        [4, 100, True, [1, 2, 3, 4, 0], [6, 7, 8, 9, 10]],
+        [1, 100, True, [1, 2, 3, 4, 5], [6, 7, 8, 9, 10], 2400],
+        [2, 100, True, [1, 2, 3, 4, 100000], [6, 7, 8, 9, 10], 2400],
+        [3, 100, True, [1, 2, 3, 4], [6, 7, 8, 9, 10], 2400],
+        [4, 100, True, [1, 2, 3, 4, 0], [6, 7, 8, 9, 10], 2400],
     ]
     (tmp_path / data.MATCHES_FILE).write_text(json.dumps(matches))
     loaded_heroes, loaded_matches = Store()._load_cache()
@@ -68,8 +68,8 @@ def test_load_cache_skips_bad_heroes_and_matches(tmp_path, monkeypatch):
 def test_aggregate_ignores_huge_ids():
     heroes = {1: hero(1, "antimage"), 10**6: hero(10**6, "huge")}
     matches = [
-        [1, 100, True, [1, 2, 3, 4, 5], [6, 7, 8, 9, 10]],
-        [2, 100, False, [1, 2, 3, 4, 10**6], [6, 7, 8, 9, 10]],
+        [1, 100, True, [1, 2, 3, 4, 5], [6, 7, 8, 9, 10], 2400],
+        [2, 100, False, [1, 2, 3, 4, 10**6], [6, 7, 8, 9, 10], 2400],
     ]
     s = aggregate(heroes, matches)
     assert s.games.shape[0] <= data.MAX_HERO_ID

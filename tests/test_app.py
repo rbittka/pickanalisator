@@ -49,7 +49,7 @@ def synthetic_stats(heroes):
     t = 1_700_000_000
 
     def add(r, d, radiant_win):
-        matches.append([len(matches), t + len(matches), radiant_win, r, d])
+        matches.append([len(matches), t + len(matches), radiant_win, r, d, 1500 + 60 * (len(matches) % 40)])
 
     for i in range(400):
         add([1, 5, 2, 3, 4], [14, 6, 7, 8, 9], i % 4 != 0)
@@ -170,3 +170,17 @@ def test_pool_recommendations(heroes, monkeypatch):
     assert {r["id"] for r in j["pool_recommendations"]} <= {1, 2, 3}
     assert j["pool_recommendations"][0]["id"] == 1  # Anti-Mage контрит Pudge
     assert client.post("/api/analyze", json={"enemy": [{"id": 14, "pos": 4}]}).json()["pool_recommendations"] == []
+
+
+def test_draft_analysis(heroes, monkeypatch):
+    s = synthetic_stats(heroes)
+    s.profile = {1: {"stuns": 5, "tower_damage": 3000, "hero_damage": 20000, "hero_healing": 0, "roshans_killed": 0.3},
+                 14: {"stuns": 60, "tower_damage": 300, "hero_damage": 15000, "hero_healing": 0, "roshans_killed": 0.05}}
+    monkeypatch.setattr(main.store, "stats", s)
+    j = TestClient(main.app).post("/api/analyze", json={"ally": [{"id": 1, "pos": 1}], "enemy": [{"id": 14, "pos": 4}]}).json()
+    d = j["draft"]
+    assert d["verdict"] == "good"  # Anti-Mage контрит Pudge в синтетике
+    assert [p["key"] for p in d["phases"]] == ["early", "mid", "late"]
+    assert {a["key"] for a in d["aspects"]} >= {"stuns", "tower_damage", "roshans_killed"}
+    assert "пока не все герои" in d["headline"]
+    assert TestClient(main.app).post("/api/analyze", json={"ally": [{"id": 1, "pos": 1}]}).json()["draft"] is None
