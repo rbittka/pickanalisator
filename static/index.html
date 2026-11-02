@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Анализатор пиков Dota 2</title>
+<meta name="description" content="Подбор героя в драфте Dota 2 по контрпикам, синергии и мете на статистике матчей высокого ранга.">
+<style>
+:root {
+  --bg: #0f1216; --panel: #171b21; --panel2: #1e232b; --line: #2a3039;
+  --text: #e6e9ee; --muted: #8b94a3; --ally: #4cc38a; --enemy: #e5534b; --ban: #6e7681;
+  --accent: #d9a441; --pos: #3fb950; --neg: #f85149;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; padding-block: 12px; border-bottom: 1px solid var(--line); }
+header h1 { font-size: 18px; margin: 0; }
+header .meta { color: var(--muted); font-size: 12px; }
+button, select, input { font: inherit; color: inherit; }
+button { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button.on { border-color: var(--accent); color: var(--accent); }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 16px; padding-block: 16px; }
+main > * { min-width: 0; }
+@media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+@media (max-width: 560px) { .teams { grid-template-columns: 1fr; } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
+
+.teams { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.team h3 { margin: 0 0 8px; font-size: 14px; }
+.team.ally h3 { color: var(--ally); } .team.enemy h3 { color: var(--enemy); }
+.slots { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.slot { position: relative; aspect-ratio: 16/9; border: 1px dashed var(--line); border-radius: 6px; overflow: hidden; background: var(--panel2); }
+.slot img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: pointer; }
+.slot .x { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; padding: 0; line-height: 18px; font-size: 14px; border-radius: 50%; background: rgba(0,0,0,.7); border-color: transparent; }
+.slot .x:hover { border-color: var(--neg); color: var(--neg); }
+.slot.replacing { border: 2px solid var(--accent); }
+.slot.replacing img { opacity: .35; }
+.slot .tag { position: absolute; top: 3px; left: 4px; font-size: 10px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .04em; pointer-events: none; }
+.rep-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.rep-head b { color: var(--accent); }
+.rec.current { background: var(--panel2); border-radius: 6px; padding: 8px; border-top: 0; margin-bottom: 6px; }
+.rec.current .rec-top { cursor: default; }
+.delta { font-size: 11px; font-weight: 600; }
+.slot select { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; font-size: 11px; background: rgba(0,0,0,.75); border: 0; padding: 1px 2px; }
+.bans { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; min-height: 28px; align-items: center; }
+.bans img { height: 26px; border-radius: 4px; filter: grayscale(1) brightness(.7); cursor: pointer; }
+.bans .lbl { color: var(--muted); font-size: 12px; margin-right: 4px; }
+.adv { margin-top: 12px; }
+.adv .bar { height: 8px; border-radius: 4px; background: var(--enemy); overflow: hidden; }
+.adv .bar div { height: 100%; background: var(--ally); }
+.adv .txt { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 14px 0 10px; }
+.toolbar input[type=search] { flex: 1; min-width: 160px; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+.mode button.on[data-mode=ally] { border-color: var(--ally); color: var(--ally); }
+.mode button.on[data-mode=enemy] { border-color: var(--enemy); color: var(--enemy); }
+.mode button.on[data-mode=ban] { border-color: var(--ban); color: var(--text); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 5px; }
+.hero { position: relative; border-radius: 5px; overflow: hidden; cursor: pointer; background: var(--panel2); aspect-ratio: 16/9; }
+.hero img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.hero .nm { position: absolute; inset: auto 0 0 0; font-size: 10px; padding: 1px 3px; background: linear-gradient(transparent, rgba(0,0,0,.85)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hero.used { opacity: .18; pointer-events: none; }
+.hero.dim { opacity: .35; }
+.hero:hover { outline: 2px solid var(--accent); }
+.fallback { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; font-size: 11px; color: var(--muted); text-align: center; padding: 2px; }
+
+.rec-head { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.weights { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px; align-items: center; font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+.weights input { width: 100%; }
+.rec { border-top: 1px solid var(--line); padding: 8px 0; }
+.rec-top { display: flex; gap: 10px; align-items: center; cursor: pointer; }
+.rec-top img { width: 64px; border-radius: 4px; }
+.rec-top .info { flex: 1; min-width: 0; }
+.rec-top .name { font-weight: 600; }
+.rec-top .sub { font-size: 12px; color: var(--muted); }
+.score { font-weight: 700; font-variant-numeric: tabular-nums; min-width: 56px; text-align: right; }
+.p { color: var(--pos); } .n { color: var(--neg); }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px 1px 1px; font-variant-numeric: tabular-nums; }
+.chip img { height: 16px; border-radius: 2px; }
+.chip .k { color: var(--muted); }
+.addbtn { font-size: 11px; padding: 2px 8px; }
+.empty { color: var(--muted); padding: 20px 0; text-align: center; }
+.note { font-size: 12px; color: var(--muted); margin-top: 10px; }
+.k { color: var(--muted); }
+
+.shot { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 12px; margin-bottom: 16px; }
+@media (max-width: 560px) { .shot { grid-template-columns: 1fr; } }
+.shot-drop { display: flex; align-items: center; justify-content: center; min-height: 96px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); font-size: 12px; text-align: center; padding: 8px; cursor: pointer; }
+.shot-drop:focus-visible, .shot-drop.over { border-color: var(--accent); outline: none; }
+.shot-drop img { max-height: 160px; max-width: 100%; border-radius: 4px; }
+.shot-drop b { color: var(--text); font-size: 13px; }
+.shot-side { display: flex; flex-direction: column; gap: 8px; }
+.shot-side .mode { display: flex; gap: 6px; align-items: center; }
+#shotRun:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+#shotRun:disabled { opacity: .5; cursor: default; }
+.shot-status { font-size: 12px; color: var(--muted); }
+.shot-status.err { color: var(--neg); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.loading { opacity: .55; transition: opacity .15s; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Анализатор пиков Dota 2</h1>
+    <div class="meta" id="meta"></div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button id="reset">Сбросить драфт</button>
+    <a class="k" href="/docs" style="font-size:12px">API</a>
+  </div>
+</header>
+
+<main>
+  <section>
+    <div class="panel shot" id="shot">
+      <div class="shot-drop" id="shotDrop" tabindex="0">
+        <img id="shotPreview" alt="Скриншот драфта" hidden>
+        <div id="shotHint"><b>Скриншот драфта</b><br>Перетащи файл сюда, вставь через Ctrl+V / ⌘V или нажми, чтобы выбрать</div>
+        <input id="shotFile" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+      </div>
+      <div class="shot-side">
+        <div class="mode" id="ourSide">
+          <span class="k">Мы за</span>
+          <button data-side="radiant" class="on">Свет</button>
+          <button data-side="dire">Тьму</button>
+        </div>
+        <button id="shotRun" disabled>Распознать героев</button>
+        <div class="shot-status" id="shotStatus"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="teams">
+        <div class="team ally"><h3>Ваша команда</h3><div class="slots" id="ally"></div></div>
+        <div class="team enemy"><h3>Противники</h3><div class="slots" id="enemy"></div></div>
+      </div>
+      <div class="bans" id="bans"></div>
+      <div class="adv" id="adv"></div>
+      <div class="note">Клик по герою в драфте — подобрать ему замену, × — убрать из драфта.</div>
+    </div>
+
+    <div class="toolbar">
+      <div class="mode" id="mode">
+        <button data-mode="ally" class="on">+ Себе</button>
+        <button data-mode="enemy">+ Врагам</button>
+        <button data-mode="ban">Бан</button>
+      </div>
+      <input type="search" id="search" placeholder="Поиск героя…">
+    </div>
+    <div class="grid" id="grid"></div>
+  </section>
+
+  <aside class="panel">
+    <h2>Рекомендации</h2>
+    <div class="rec-head" id="side">
+      <button data-side="ally" class="on">Для нас</button>
+      <button data-side="enemy">Для противников</button>
+    </div>
+    <div class="rec-head" id="posTabs"></div>
+    <div class="weights">
+      <span>Контрпик</span><input type="range" id="wCounter" min="0" max="2" step="0.1" value="1"><span id="wCounterV"></span>
+      <span>Синергия</span><input type="range" id="wSyn" min="0" max="2" step="0.1" value="0.7"><span id="wSynV"></span>
+      <span>Сила в мете</span><input type="range" id="wMeta" min="0" max="3" step="0.1" value="1"><span id="wMetaV"></span>
+    </div>
+    <div id="recs"></div>
+    <div class="note">
+      Оценка = винрейт героя относительно 50% + сумма преимуществ против каждого врага + сумма синергий с союзниками,
+      в процентных пунктах. Малые выборки сглажены к ожидаемому значению, поэтому редкие матчапы почти не влияют на оценку.
+      Клик по карточке добавляет героя в драфт.
+    </div>
+  </aside>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
