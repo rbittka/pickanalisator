@@ -137,7 +137,9 @@ function renderRecs(res) {
       <button type="button" id="repCancel">Отмена</button></div>` + (res.current ? recCard(res.current, -1, true) : '');
   }
   const list = res.recommendations;
-  el.innerHTML = head + (list.length ? list.map((r, i) => recCard(r, i, false)).join('') : '<div class="empty">Нет подходящих героев</div>');
+  const full = !rep && state[state.side].length >= 5;
+  const empty = full ? 'Команда собрана — смотри «Разбор драфта» под драфтом.' : 'Нет подходящих героев для этой позиции.';
+  el.innerHTML = head + (list.length ? list.map((r, i) => recCard(r, i, false)).join('') : `<div class="empty">${empty}</div>`);
   $('#repCancel')?.addEventListener('click', () => { state.replace = null; render(); });
   el.querySelectorAll('.rec-top[data-i]').forEach((n) => n.addEventListener('click', () => pickRecommendation(list[+n.dataset.i])));
 }
@@ -342,21 +344,31 @@ $('#poolList').addEventListener('click', (e) => {
 let shotBlob = null, ourSide = 'radiant';
 
 function setShotStatus(text, err = false) {
+  $('#shotStatus').classList.remove('ok');
   $('#shotStatus').textContent = text;
   $('#shotStatus').classList.toggle('err', err);
 }
+// Safari при вставке и перетаскивании иногда не сообщает тип файла — тогда смотрим на расширение,
+// а окончательно формат проверяет сервер.
+const looksLikeImage = (f) => f && (/^image\//.test(f.type) || (!f.type && /\.(png|jpe?g|webp|tiff?|heic)$/i.test(f.name || '')));
+
 function setShot(blob) {
-  if (!blob || !/^image\//.test(blob.type)) return;
+  if (!looksLikeImage(blob)) {
+    if (blob) setShotStatus('Это не похоже на картинку. Нужен скриншот в PNG, JPEG или WebP.', true);
+    return;
+  }
   shotBlob = blob;
   const prev = $('#shotPreview');
   if (prev.src) URL.revokeObjectURL(prev.src);
   prev.src = URL.createObjectURL(blob);
   // Некоторые форматы (например, TIFF из буфера обмена) браузер не показывает — тогда просто пишем, что файл выбран.
-  prev.onerror = () => { prev.hidden = true; $('#shotHint').hidden = false; $('#shotHint').innerHTML = '<b>Картинка загружена</b><br>Нажми «Распознать героев»'; };
+  prev.onerror = () => { prev.hidden = true; $('#shotIcon').hidden = false; };
   prev.hidden = false;
-  $('#shotHint').hidden = true;
+  $('#shotIcon').hidden = true;
+  $('#shotTitle').textContent = 'Скриншот загружен';
+  $('#shotHint').textContent = 'Нажми «Распознать». Чтобы заменить, вставь или выбери другой.';
   $('#shotRun').disabled = false;
-  setShotStatus('Скриншот загружен');
+  setShotStatus('');
 }
 
 async function recognize() {
@@ -379,6 +391,11 @@ async function recognize() {
     setShotStatus(total
       ? `Найдено: ${ours.length} у нас, ${theirs.length} у противников${r.bans.length ? `, банов ${r.bans.length}` : ''}. Если что-то не так, поправь драфт вручную.`
       : 'Героев на снимке не нашлось. Нужен скриншот всего экрана игры, где видна верхняя панель с портретами.', !total);
+    if (total) {
+      $('#shotStatus').classList.add('ok');
+      $('#shotTitle').textContent = 'Распознано ✓';
+      $('#shotHint').textContent = 'Чтобы распознать другой драфт, вставь или выбери новый скриншот.';
+    }
   } catch (e) {
     // Сетевой сбой в браузере приходит без кода ответа («Load failed», «Failed to fetch»).
     setShotStatus(e.status ? e.message : 'Сервер не ответил. Проверь интернет и попробуй ещё раз через минуту.', true);
@@ -449,7 +466,10 @@ $('#shotDrop').addEventListener('drop', (e) => {
   setShot(e.dataTransfer.files[0]);
 });
 document.addEventListener('paste', (e) => {
-  const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith('image/'));
+  // Сначала файлы (скопированный в Finder скриншот), потом картинка из буфера (⌘⌃⇧4, Win + Shift + S).
+  const file = [...(e.clipboardData?.files || [])].find(looksLikeImage);
+  if (file) { e.preventDefault(); setShot(file); return; }
+  const item = [...(e.clipboardData?.items || [])].find((i) => i.kind === 'file' && (i.type.startsWith('image/') || !i.type));
   if (item) setShot(item.getAsFile());
 });
 $('#ourSide').addEventListener('click', (e) => {
@@ -464,12 +484,12 @@ const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
 const IS_TOUCH = matchMedia('(hover: none)').matches;
 if (IS_TOUCH) {
   $('#gridHint').textContent = 'Нажми на пустой слот, чтобы выбрать команду, затем на героев. Кнопки выше — бан и мой пул.';
-  $('#shotHint').innerHTML = '<b>Скриншот драфта</b><br>Нажми, чтобы выбрать картинку из галереи';
+  $('#shotHint').textContent = 'Нажми, чтобы выбрать картинку из галереи';
 } else {
   if (IS_MAC) $('#gridHint').textContent = $('#gridHint').textContent.replace('Alt + клик', '⌥ + клик');
-  $('#shotHint').innerHTML = IS_MAC
-    ? '<b>Скриншот драфта</b><br>Сделай скриншот (⌘⇧3), затем вставь сюда через ⌘V, перетащи файл или нажми, чтобы выбрать'
-    : '<b>Скриншот драфта</b><br>Нажми PrtScn или Win + Shift + S, затем вставь сюда через Ctrl + V, перетащи файл или нажми, чтобы выбрать';
+  $('#shotHint').textContent = IS_MAC
+    ? 'Снимок в буфер: ⌘ + Control + Shift + 3 → вставь сюда ⌘V. Или перетащи файл скриншота с рабочего стола'
+    : 'Скриншот (PrtScn или Win + Shift + S) → вставь сюда через Ctrl + V, перетащи файл или нажми, чтобы выбрать';
 }
 
 // --- Вход через Steam ---
@@ -537,9 +557,7 @@ async function boot() {
     heroById = new Map(heroes.map((h) => [h.id, h]));
     const rank = `${RANKS[Math.floor(meta.min_rank / 10)] || meta.min_rank} ${meta.min_rank % 10 || ''}`.trim();
     $('#meta').textContent = `Источник: OpenDota · ${meta.matches.toLocaleString('ru-RU')} публичных матчей рангом ${rank}+ за ${meta.window_days} дн. · обновлено ${new Date(meta.updated * 1000).toLocaleString('ru-RU')}`;
-    setShotStatus(meta.photo_recognition
-      ? 'Загрузи скриншот всего экрана игры или фото монитора: герои определятся автоматически.'
-      : 'Загрузи скриншот всего экрана игры: герои определятся по верхней панели.');
+    setShotStatus('');
     render();
     loadMe();
   } catch (e) {
