@@ -111,14 +111,17 @@ class Vision:
             _image_block(self._sheet_for(refs)),
             {"type": "text", "text": PROMPT.format(numbered=numbered)},
         ]
+        # Серверный откат на другую модель при отказе есть только у Opus, Sonnet и Fable;
+        # у Haiku его нет, и параметр для неё не передаём.
+        fallback = {} if "haiku" in config.CLAUDE_MODEL else {
+            "betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
         try:
             response = await self.client.beta.messages.create(
                 model=config.CLAUDE_MODEL,
-                max_tokens=16000,
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
-                output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA}},
+                max_tokens=4000,
+                output_config={"effort": config.VISION_EFFORT, "format": {"type": "json_schema", "schema": SCHEMA}},
                 messages=[{"role": "user", "content": content}],
+                **fallback,
             )
         except anthropic.RateLimitError:
             raise VisionUnavailable("Сервис распознавания перегружен, попробуй через минуту.")

@@ -14,7 +14,9 @@ REFRESH_HOURS = float(os.getenv("REFRESH_HOURS", "6"))
 OPENDOTA_API_KEY = os.getenv("OPENDOTA_API_KEY", "")
 
 # Распознавание фото экрана через Claude (если ключа нет, работает только разбор скриншота).
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5-5")
+# Haiku — самая дешёвая модель (~0,15 цента за фото); если будет ошибаться, поставить claude-sonnet-5-5.
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-5-5")
+VISION_EFFORT = os.getenv("VISION_EFFORT", "low")
 CLAUDE_DAILY_LIMIT = int(os.getenv("CLAUDE_DAILY_LIMIT", "200"))
 CLAUDE_PER_IP_HOURLY = int(os.getenv("CLAUDE_PER_IP_HOURLY", "10"))
 

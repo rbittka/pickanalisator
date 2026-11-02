@@ -73,10 +73,10 @@ def test_request_shape_and_parsing(refs):
 
     (req,) = requests
     assert req.url.path == "/v1/messages"
-    assert "server-side-fallback-2026-07-01" in req.headers["anthropic-beta"]
     body = json.loads(req.content)
-    assert body["model"] == config.CLAUDE_MODEL
-    assert body["fallbacks"] == "default"
+    assert body["model"] == config.CLAUDE_MODEL == "claude-haiku-5-5"
+    assert body["output_config"]["effort"] == "low"
+    assert "fallbacks" not in body  # у Haiku серверного отката нет
     assert body["output_config"]["format"]["type"] == "json_schema"
     content = body["messages"][0]["content"]
     assert [b["type"] for b in content] == ["image", "image", "image", "text"]
@@ -129,3 +129,13 @@ def test_api_recognize_falls_back_to_claude(heroes, monkeypatch):
     assert j["radiant"] == [refs.heroes[4].id]
     assert j["bans"] == [refs.heroes[1].id]
     assert j["dire"] == []
+
+
+def test_fallbacks_for_bigger_models(refs, monkeypatch):
+    monkeypatch.setattr(config, "CLAUDE_MODEL", "claude-sonnet-5-5")
+    requests = []
+    v = fake_vision(message(json.dumps(SLOTS)), requests)
+    asyncio.run(v.recognize(photo(), refs, "1.1.1.1"))
+    (req,) = requests
+    assert "server-side-fallback-2026-07-01" in req.headers["anthropic-beta"]
+    assert json.loads(req.content)["fallbacks"] == "default"
