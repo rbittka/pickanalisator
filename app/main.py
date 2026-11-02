@@ -113,6 +113,10 @@ async def security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     if not request.url.path.startswith(("/docs", "/redoc")):
         response.headers["Content-Security-Policy"] = CSP
+    # Страницу и скрипт браузер должен перепроверять, иначе после обновления сайта
+    # он показывает старую версию (по ETag это дёшево: 304 без тела).
+    if request.url.path in ("/", "/index.html", "/app.js"):
+        response.headers["Cache-Control"] = "no-cache"
     return response
 
 
