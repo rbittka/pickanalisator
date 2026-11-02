@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,8 @@ import numpy as np
 from . import config
 
 log = logging.getLogger(__name__)
+# httpx пишет в INFO каждый запрос с полным URL, а в URL — ключ OpenDota.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 API = "https://api.opendota.com/api"
 STEAM_CDN = "https://cdn.cloudflare.steamstatic.com"
@@ -26,6 +29,37 @@ STEAM_CDN = "https://cdn.cloudflare.steamstatic.com"
 CHUNK_IDS = 500_000
 MATCHES_FILE = "matches.json"
 HEROES_FILE = "heroes.json"
+MAX_HERO_ID = 1000  # id героев в Dota сейчас до ~150; от него зависит размер матриц n×n
+MAX_PORTRAIT_BYTES = 2 * 1024 * 1024
+MAX_PORTRAIT_SIDE = 2000
+PUBLIC_ERROR = "Источник статистики временно недоступен"
+_NPC = re.compile(r"[a-z0-9_]{1,64}")
+_API_KEY = re.compile(r"api_key=[^&\s\"']+")
+
+
+def _redact(text: str) -> str:
+    """Убирает ключ OpenDota из текста ошибки: httpx кладёт в неё полный URL запроса."""
+    return _API_KEY.sub("api_key=***", text)
+
+
+def _valid_hero_id(i) -> bool:
+    return isinstance(i, int) and not isinstance(i, bool) and 0 < i < MAX_HERO_ID
+
+
+def _valid_hero(h: "Hero") -> bool:
+    ok = _valid_hero_id(h.id) and isinstance(h.npc, str) and bool(_NPC.fullmatch(h.npc))
+    if not ok:
+        log.warning("Пропущен герой с некорректными данными: id=%r npc=%r", h.id, h.npc)
+    return ok
+
+
+def _valid_match(m) -> bool:
+    """Матч из OpenDota или кэша: [match_id, start_time, radiant_win, radiant, dire]."""
+    try:
+        teams = (m[3], m[4])
+        return all(isinstance(t, list) and len(t) == 5 and all(_valid_hero_id(i) for i in t) for t in teams)
+    except (TypeError, IndexError, KeyError):
+        return False
 
 
 @dataclass
@@ -74,7 +108,7 @@ async def _explorer(client: httpx.AsyncClient, sql: str) -> list[dict]:
         except (httpx.HTTPError, RuntimeError) as e:
             if attempt == 3:
                 raise
-            log.warning("OpenDota explorer: %s, повтор", e)
+            log.warning("OpenDota explorer: %s: %s, повтор", type(e).__name__, _redact(str(e)))
             await asyncio.sleep(5 * (attempt + 1))
     return []
 
@@ -99,14 +133,17 @@ async def fetch_heroes(client: httpx.AsyncClient) -> dict[int, Hero]:
     table = _positions_table()
     heroes = {}
     for h in r.json():
-        npc = h["name"].removeprefix("npc_dota_hero_")
-        heroes[h["id"]] = Hero(
-            id=h["id"],
-            name=h["localized_name"],
+        npc = str(h.get("name", "")).removeprefix("npc_dota_hero_")
+        hero = Hero(
+            id=h.get("id"),
+            name=str(h.get("localized_name", "")),
             npc=npc,
             roles=h.get("roles") or [],
-            positions=table.get(h["id"]) or _positions_from_roles(h.get("roles") or []),
+            positions=table.get(h.get("id")) or _positions_from_roles(h.get("roles") or []),
         )
+        # npc становится путём к файлу и адресом картинки: пропускаем всё подозрительное.
+        if _valid_hero(hero):
+            heroes[hero.id] = hero
     await _ensure_portraits(client, heroes.values())
     return heroes
 
@@ -123,34 +160,49 @@ def portrait_path(npc: str) -> Path | None:
     return None
 
 
-async def _ensure_portraits(client: httpx.AsyncClient, heroes) -> None:
-    """Докачивает портреты новых героев (в репозитории лежат уже имеющиеся)."""
+def _save_portrait(content: bytes, path: Path) -> None:
     from io import BytesIO
 
     from PIL import Image
 
+    im = Image.open(BytesIO(content))
+    # Размер виден по заголовку до распаковки пикселей: отсекаем «картинки-бомбы».
+    if im.width > MAX_PORTRAIT_SIDE or im.height > MAX_PORTRAIT_SIDE or not im.width or not im.height:
+        raise ValueError(f"неожиданный размер {im.width}×{im.height}")
+    im = im.convert("RGB")
+    im = im.resize((128, max(1, round(128 * im.height / im.width))), Image.Resampling.LANCZOS)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    im.save(path, quality=80)
+
+
+async def _ensure_portraits(client: httpx.AsyncClient, heroes) -> None:
+    """Докачивает портреты новых героев (в репозитории лежат уже имеющиеся)."""
     target = config.DATA_DIR / "heroes"
     for h in heroes:
-        if portrait_path(h.npc):
+        if not _NPC.fullmatch(h.npc) or portrait_path(h.npc):
             continue
         url = f"{STEAM_CDN}/apps/dota2/images/dota_react/heroes/{h.npc}.png"
         try:
-            r = await client.get(url)
-            r.raise_for_status()
-            im = Image.open(BytesIO(r.content)).convert("RGB")
-            im = im.resize((128, round(128 * im.height / im.width)), Image.Resampling.LANCZOS)
-            target.mkdir(parents=True, exist_ok=True)
-            im.save(target / f"{h.npc}.jpg", quality=80)
+            async with client.stream("GET", url) as r:
+                r.raise_for_status()
+                if int(r.headers.get("content-length") or 0) > MAX_PORTRAIT_BYTES:
+                    raise ValueError("слишком большой файл")
+                content = b""
+                async for chunk in r.aiter_bytes():
+                    content += chunk
+                    if len(content) > MAX_PORTRAIT_BYTES:
+                        raise ValueError("слишком большой файл")
+            await asyncio.to_thread(_save_portrait, content, target / f"{h.npc}.jpg")
             log.info("Скачан портрет %s", h.npc)
         except Exception as e:  # портрет не критичен: без него герой просто не распознаётся
-            log.warning("Нет портрета для %s: %s", h.npc, e)
+            log.warning("Нет портрета для %s: %s: %s", h.npc, type(e).__name__, _redact(str(e)))
 
 
 async def fetch_matches(client: httpx.AsyncClient, known: list[list]) -> list[list]:
     """Догружает матчи за окно WINDOW_DAYS. Матч: [match_id, start_time, radiant_win, radiant, dire]."""
     cutoff = int(time.time()) - config.WINDOW_DAYS * 86400
     known = [m for m in known if m[1] >= cutoff]
-    latest = (await _explorer(client, "select max(match_id) as id from public_matches"))[0]["id"]
+    latest = int((await _explorer(client, "select max(match_id) as id from public_matches"))[0]["id"])
     floor_id = max((m[0] for m in known), default=0)
 
     fresh: list[list] = []
@@ -169,10 +221,11 @@ async def fetch_matches(client: httpx.AsyncClient, known: list[list]) -> list[li
                   and duration > 900 and lobby_type = 7 and game_mode in (1, 2, 22)""",
         )
         fresh += [
-            [r["match_id"], r["start_time"], bool(r["radiant_win"]), r["radiant_team"], r["dire_team"]]
-            for r in rows
-            if len(r["radiant_team"] or []) == 5 and len(r["dire_team"] or []) == 5
-            and 0 not in r["radiant_team"] and 0 not in r["dire_team"]
+            m for m in (
+                [r["match_id"], r["start_time"], bool(r["radiant_win"]), r["radiant_team"], r["dire_team"]]
+                for r in rows
+            )
+            if _valid_match(m)
         ]
         log.info("OpenDota: %s–%s, +%d матчей", lo, hi, len(rows))
         hi = lo
@@ -183,6 +236,9 @@ async def fetch_matches(client: httpx.AsyncClient, known: list[list]) -> list[li
 
 
 def aggregate(heroes: dict[int, Hero], matches: list[list]) -> Stats:
+    # Сама по себе безопасна: id вне 0 < id < MAX_HERO_ID раздули бы матрицы n×n до гигабайт.
+    heroes = {k: h for k, h in heroes.items() if _valid_hero_id(k)}
+    matches = [m for m in matches if _valid_match(m)]
     n = max(max(heroes, default=0), max((max(m[3] + m[4]) for m in matches), default=0)) + 1
     games = np.zeros(n, np.int64)
     wins = np.zeros(n, np.int64)
@@ -229,9 +285,13 @@ class Store:
         hf, mf = config.DATA_DIR / HEROES_FILE, config.DATA_DIR / MATCHES_FILE
         if not (hf.exists() and mf.exists()):
             return None
-        heroes = {int(k): Hero(**{**v, "positions": {int(p): s for p, s in v["positions"].items()}})
-                  for k, v in json.loads(hf.read_text()).items()}
-        return heroes, json.loads(mf.read_text())
+        heroes = {}
+        for k, v in json.loads(hf.read_text()).items():
+            h = Hero(**{**v, "positions": {int(p): s for p, s in v["positions"].items()}})
+            if _valid_hero(h) and h.id == int(k):
+                heroes[h.id] = h
+        matches = [m for m in json.loads(mf.read_text()) if _valid_match(m)]
+        return heroes, matches
 
     def _save_cache(self, heroes: dict[int, Hero], matches: list[list]) -> None:
         config.DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -259,8 +319,10 @@ class Store:
                 self.stats, self.error = stats, None
                 log.info("Статистика обновлена: %d матчей", stats.matches)
             except Exception as e:
-                self.error = str(e)
-                log.exception("Не удалось обновить статистику")
+                # Наружу (в /api/health и ответы 503) — только общий текст: в тексте ошибки
+                # httpx полный URL с ключом OpenDota, у OpenDota — текст SQL-ошибки.
+                self.error = PUBLIC_ERROR
+                log.error("Не удалось обновить статистику: %s: %s", type(e).__name__, _redact(str(e)))
 
     async def run_forever(self) -> None:
         while True:

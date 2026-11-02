@@ -17,3 +17,5 @@ services:
         value: "75"
       - key: WINDOW_DAYS
         value: "8"
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"

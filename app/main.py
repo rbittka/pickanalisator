@@ -2,34 +2,36 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import config, scoring
 from .data import Stats, Store, portrait_path
-from .recognize import References, build_references, load_screenshot, match_top_bar
+from .limits import SlidingWindow, client_ip
+from .recognize import BadImage, References, build_references, match_top_bar, normalize, open_image
 from .vision import Vision, VisionUnavailable
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger(__name__)
 
 store = Store()
 vision = Vision()
 _refs: tuple[int, References] | None = None
+_recognize_slots = asyncio.Semaphore(config.RECOGNIZE_CONCURRENCY)
+_recognize_per_ip = SlidingWindow(config.RECOGNIZE_PER_IP_MINUTE, 60)
+_analyze_per_ip = SlidingWindow(240, 60)
 
 
 def stats() -> Stats:
     if not store.stats:
-        detail = "Статистика ещё загружается, попробуй через минуту."
-        if store.error:
-            detail = f"Не удалось загрузить статистику: {store.error}"
-        raise HTTPException(503, detail)
+        raise HTTPException(503, store.error or "Статистика ещё загружается, попробуй через минуту.")
     return store.stats
 
 
@@ -50,7 +52,57 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Анализатор пиков Dota 2", version="1.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"])
+
+# Страницы сайта: скрипты и стили только свои, встраивать сайт в чужие фреймы нельзя.
+# /docs грузит Swagger UI с CDN, поэтому для него CSP не ставим.
+CSP = ("default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; "
+       "script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+
+
+class BodyLimit:
+    """Обрывает запросы с телом больше лимита до того, как их разберёт multipart
+    (иначе многогигабайтная загрузка сначала целиком ляжет во временный файл)."""
+
+    def __init__(self, app, limit: int) -> None:
+        self.app, self.limit = app, limit
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        length = dict(scope["headers"]).get(b"content-length")
+        if length and length.isdigit() and int(length) > self.limit:
+            return await _too_large(send)
+        seen = 0
+
+        async def limited():
+            nonlocal seen
+            message = await receive()
+            seen += len(message.get("body", b""))
+            if seen > self.limit:
+                raise HTTPException(413, "Файл больше 15 МБ")
+            return message
+
+        await self.app(scope, limited, send)
+
+
+async def _too_large(send) -> None:
+    body = '{"detail":"Файл больше 15 МБ"}'.encode()
+    await send({"type": "http.response.start", "status": 413,
+                "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
+    await send({"type": "http.response.body", "body": body})
+
+
+app.add_middleware(BodyLimit, limit=config.MAX_UPLOAD_BYTES + 64 * 1024)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if not request.url.path.startswith(("/docs", "/redoc")):
+        response.headers["Content-Security-Policy"] = CSP
+    return response
 
 
 # --- Модели запросов ---
@@ -122,8 +174,10 @@ def heroes():
 
 
 @app.post("/api/analyze")
-def analyze(body: AnalyzeIn):
+def analyze(body: AnalyzeIn, request: Request):
     """Рекомендации для стороны `side`; с `replace` — замена героя в указанном слоте."""
+    if not _analyze_per_ip.hit(client_ip(request)):
+        raise HTTPException(429, "Слишком много запросов, подожди минуту.")
     s = stats()
     for slot in body.ally + body.enemy:
         if slot.id not in s.heroes:
@@ -159,22 +213,30 @@ def analyze(body: AnalyzeIn):
 async def recognize(request: Request, image: UploadFile = File(...),
                     allow_claude: bool = Form(True)):
     """Герои на скриншоте драфта. Сначала верхняя панель, затем (если нет) Claude."""
+    ip = client_ip(request)
+    if not _recognize_per_ip.hit(ip):
+        raise HTTPException(429, "Слишком много скриншотов за минуту, подожди немного.")
     data = await image.read(config.MAX_UPLOAD_BYTES + 1)
     if len(data) > config.MAX_UPLOAD_BYTES:
         raise HTTPException(413, "Файл больше 15 МБ")
-    try:
-        im = await asyncio.to_thread(load_screenshot, data)
-    except Exception:
-        raise HTTPException(422, "Не получилось открыть изображение. Нужен PNG, JPEG или WebP.")
     refs = references()
-    found = await asyncio.to_thread(match_top_bar, im, refs)
+    # Разбор нагружает процессор: одновременно не больше нескольких, остальные ждут.
+    async with _recognize_slots:
+        try:
+            original = await asyncio.to_thread(open_image, data)
+        except BadImage as e:
+            raise HTTPException(422, str(e))
+        except Exception:
+            log.warning("Не удалось разобрать загруженное изображение", exc_info=True)
+            raise HTTPException(422, "Не получилось открыть изображение. Нужен PNG, JPEG или WebP.")
+        found = await asyncio.to_thread(match_top_bar, normalize(original), refs)
     method = "topbar"
     bans = []
     if len(found["radiant"]) + len(found["dire"]) < 2:
         if not allow_claude:
             raise HTTPException(422, "Верхняя панель с героями не найдена.")
         try:
-            got = await vision.recognize(im, refs, request.client.host if request.client else "?")
+            got = await vision.recognize(original, refs, ip)
         except VisionUnavailable as e:
             raise HTTPException(422, str(e))
         found, bans, method = got, got["ban"], "claude"
@@ -188,10 +250,11 @@ async def recognize(request: Request, image: UploadFile = File(...),
 
 @app.post("/api/admin/refresh")
 async def admin_refresh(x_admin_token: str = Header("")):
-    if not config.ADMIN_TOKEN or x_admin_token != config.ADMIN_TOKEN:
+    if not config.ADMIN_TOKEN or not hmac.compare_digest(x_admin_token.encode(), config.ADMIN_TOKEN.encode()):
         raise HTTPException(403, "Нет доступа")
-    await store.refresh()
-    return {"ok": store.error is None, "error": store.error}
+    # Обновление идёт минуту и больше: запускаем в фоне и сразу отвечаем.
+    asyncio.create_task(store.refresh())
+    return {"started": True}
 
 
 # --- Сайт ---

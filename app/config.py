@@ -18,5 +18,12 @@ CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-5-5")
 CLAUDE_DAILY_LIMIT = int(os.getenv("CLAUDE_DAILY_LIMIT", "200"))
 CLAUDE_PER_IP_HOURLY = int(os.getenv("CLAUDE_PER_IP_HOURLY", "10"))
 
+# Сколько прокси дописывают адрес в X-Forwarded-For (на Render один). 0 — заголовок не учитывать.
+TRUSTED_PROXY_HOPS = int(os.getenv("TRUSTED_PROXY_HOPS", "1" if os.getenv("RENDER") else "0"))
+# Разбор скриншотов грузит процессор: общий и личный лимиты.
+RECOGNIZE_PER_IP_MINUTE = int(os.getenv("RECOGNIZE_PER_IP_MINUTE", "12"))
+RECOGNIZE_CONCURRENCY = int(os.getenv("RECOGNIZE_CONCURRENCY", "2"))
+MAX_IMAGE_PIXELS = 40_000_000  # 8K-скриншот — около 33 Мп
+
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024

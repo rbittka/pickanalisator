@@ -15,6 +15,7 @@ from io import BytesIO
 import numpy as np
 from PIL import Image, ImageOps
 
+from . import config
 from .data import Hero, portrait_path
 
 COARSE = (16, 9)
@@ -60,11 +61,45 @@ def _inside(im: Image.Image, x: float, y: float, w: float, h: float) -> bool:
     return x >= 0 and y >= 0 and x + w <= im.width and y + h <= im.height
 
 
-def load_screenshot(data: bytes) -> Image.Image:
-    im = ImageOps.exif_transpose(Image.open(BytesIO(data))).convert("RGB")
+class BadImage(ValueError):
+    """Файл не картинка нужного формата или слишком большой; текст — для пользователя."""
+
+
+FORMATS = {"PNG", "JPEG", "MPO", "WEBP"}  # MPO — так Pillow называет JPEG с айфона
+MAX_SIDE = 2400  # для Claude больше не нужно: API всё равно ужимает до ~1.2 Мп
+MAX_ASPECT = 4.5  # шире 32:9 (3.56) экранов не бывает; фото может быть вертикальным
+
+
+def open_image(data: bytes) -> Image.Image:
+    """Открывает загруженный файл. Размер проверяется по заголовку, до распаковки пикселей:
+    файл в несколько килобайт может описывать картинку на гигабайты памяти."""
+    try:
+        im = Image.open(BytesIO(data))
+    except (OSError, Image.DecompressionBombError):
+        raise BadImage("Не получилось открыть изображение. Нужен PNG, JPEG или WebP.")
+    if im.format not in FORMATS:
+        raise BadImage("Неподдерживаемый формат. Нужен PNG, JPEG или WebP.")
+    if im.width * im.height > config.MAX_IMAGE_PIXELS:
+        raise BadImage("Слишком большое изображение. Подойдёт обычный скриншот экрана.")
+    # «Нитка» вроде 30000×1 весит байты, но при приведении к высоте 720 разрослась бы до гигабайт.
+    if not (1 / MAX_ASPECT <= im.width / im.height <= MAX_ASPECT):
+        raise BadImage("Странные пропорции изображения. Подойдёт обычный скриншот экрана.")
+    try:
+        im = ImageOps.exif_transpose(im).convert("RGB")
+    except (OSError, Image.DecompressionBombError):
+        raise BadImage("Файл повреждён или обрезан.")
+    im.thumbnail((MAX_SIDE, MAX_SIDE), Image.Resampling.BOX)
+    return im
+
+
+def normalize(im: Image.Image) -> Image.Image:
     if im.height != NORM_HEIGHT:
         im = im.resize((round(im.width * NORM_HEIGHT / im.height), NORM_HEIGHT), Image.Resampling.BOX)
     return im
+
+
+def load_screenshot(data: bytes) -> Image.Image:
+    return normalize(open_image(data))
 
 
 def match_top_bar(im: Image.Image, refs: References) -> dict[str, list[Hero]]:

@@ -11,7 +11,7 @@ const cls = (x) => (x >= 0 ? 'p' : 'n');
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 function heroImg(h, extra = '') {
-  return `<img src="${h.img}" alt="${esc(h.name)}" title="${esc(h.name)}" loading="lazy" ${extra}>`;
+  return `<img src="${esc(h.img)}" alt="${esc(h.name)}" title="${esc(h.name)}" loading="lazy" ${extra}>`;
 }
 
 async function api(path, opts) {

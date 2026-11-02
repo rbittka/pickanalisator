@@ -8,8 +8,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import time
-from collections import defaultdict, deque
 from io import BytesIO
 
 import anthropic
@@ -17,6 +15,7 @@ from PIL import Image
 
 from . import config
 from .data import Hero
+from .limits import SlidingWindow
 from .recognize import References, reference_sheet
 
 log = logging.getLogger(__name__)
@@ -71,8 +70,8 @@ class Vision:
     def __init__(self) -> None:
         self.client = anthropic.AsyncAnthropic() if self.configured() else None
         self._sheet: tuple[int, bytes] | None = None
-        self._calls: deque[float] = deque()
-        self._per_ip: dict[str, deque[float]] = defaultdict(deque)
+        self._daily = SlidingWindow(config.CLAUDE_DAILY_LIMIT, 86400)
+        self._per_ip = SlidingWindow(config.CLAUDE_PER_IP_HOURLY, 3600)
 
     @staticmethod
     def configured() -> bool:
@@ -81,16 +80,11 @@ class Vision:
         return bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"))
 
     def _check_limits(self, ip: str) -> None:
-        now = time.time()
-        for q, window in ((self._calls, 86400), (self._per_ip[ip], 3600)):
-            while q and now - q[0] > window:
-                q.popleft()
-        if len(self._calls) >= config.CLAUDE_DAILY_LIMIT:
-            raise VisionUnavailable("Дневной лимит распознавания фото исчерпан. Пришли скриншот всего экрана игры.")
-        if len(self._per_ip[ip]) >= config.CLAUDE_PER_IP_HOURLY:
+        # Сначала личный лимит: иначе отказ по нему съедал бы общий дневной.
+        if not self._per_ip.hit(ip):
             raise VisionUnavailable("Слишком много фото за час. Попробуй позже или пришли скриншот всего экрана.")
-        self._calls.append(now)
-        self._per_ip[ip].append(now)
+        if not self._daily.hit():
+            raise VisionUnavailable("Дневной лимит распознавания фото исчерпан. Пришли скриншот всего экрана игры.")
 
     def _sheet_for(self, refs: References) -> bytes:
         if not self._sheet or self._sheet[0] != id(refs):

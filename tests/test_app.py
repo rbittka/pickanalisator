@@ -104,3 +104,59 @@ def test_api_recognize(heroes, monkeypatch):
     assert r.status_code == 200
     assert r.json()["method"] == "topbar"
     assert len(r.json()["radiant"]) == 5 and len(r.json()["dire"]) == 5
+
+
+def _png(w, h) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", (w, h)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_rejects_thread_image_and_huge_canvas():
+    from app.recognize import BadImage, open_image
+
+    for w, h in ((30000, 1), (1, 30000), (8000, 8000)):
+        with pytest.raises(BadImage):
+            open_image(_png(w, h))
+    assert open_image(_png(1280, 720)).size == (1280, 720)
+
+
+def test_recognize_rate_limit_and_body_limit(heroes, monkeypatch):
+    monkeypatch.setattr(main.store, "stats", synthetic_stats(heroes))
+    monkeypatch.setattr(main, "_recognize_per_ip", main.SlidingWindow(2, 60))
+    client = TestClient(main.app)
+    small = _png(1280, 720)
+    codes = [client.post("/api/recognize", files={"image": ("s.png", small, "image/png")},
+                         data={"allow_claude": "false"}).status_code for _ in range(3)]
+    assert codes[-1] == 429
+    big = client.post("/api/recognize", content=b"x" * (16 * 1024 * 1024),
+                      headers={"content-type": "multipart/form-data; boundary=x"})
+    assert big.status_code == 413
+
+
+def test_client_ip_uses_proxy_appended_address(monkeypatch):
+    from starlette.requests import Request
+
+    from app import config
+    from app.limits import client_ip
+
+    scope = {"type": "http", "client": ("10.0.0.1", 1),
+             "headers": [(b"x-forwarded-for", b"6.6.6.6, 203.0.113.7")]}
+    monkeypatch.setattr(config, "TRUSTED_PROXY_HOPS", 1)
+    assert client_ip(Request(scope)) == "203.0.113.7"  # подставленный клиентом 6.6.6.6 игнорируется
+    monkeypatch.setattr(config, "TRUSTED_PROXY_HOPS", 0)
+    assert client_ip(Request(scope)) == "10.0.0.1"
+
+
+def test_security_headers_and_admin(heroes, monkeypatch):
+    monkeypatch.setattr(main.store, "stats", synthetic_stats(heroes))
+    client = TestClient(main.app)
+    r = client.get("/")
+    assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
+    assert r.headers["x-content-type-options"] == "nosniff"
+    monkeypatch.setattr(main.config, "ADMIN_TOKEN", "secret")
+    assert client.post("/api/admin/refresh", headers={"x-admin-token": "nope"}).status_code == 403
