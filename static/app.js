@@ -391,7 +391,8 @@ $('#shotRun').addEventListener('click', recognize);
 function renderAccount(error = '') {
   const el = $('#account');
   if (ME?.logged_in) {
-    el.innerHTML = `${ME.avatar ? `<img src="${esc(ME.avatar)}" alt="">` : ''}<span>${esc(ME.name)}</span>
+    el.innerHTML = `<a class="btn" href="/me.html">Мой разбор</a>
+      ${ME.avatar ? `<img src="${esc(ME.avatar)}" alt="">` : ''}<span>${esc(ME.name)}</span>
       <button type="button" id="logout">Выйти</button>`;
     $('#logout').addEventListener('click', async () => {
       await fetch('/auth/logout', { method: 'POST' }).catch(() => {});
@@ -401,8 +402,21 @@ function renderAccount(error = '') {
     el.innerHTML = (error ? `<span class="err">${esc(error)}</span>` : '')
       + '<a class="btn" href="/auth/steam/login">Войти через Steam</a>';
   }
-  $('#poolImport').hidden = !ME?.logged_in;
+  $('#poolImport').hidden = $('#poolPeriod').hidden = !ME?.logged_in;
 }
+
+async function loadMyStats() {
+  try {
+    const r = await api(`/api/me/heroes?period=${$('#poolPeriod').value}`);
+    MYSTATS = new Map(r.heroes.map((h) => [h.id, h]));
+    $('#poolStatus').textContent = MYSTATS.size ? ''
+      : 'OpenDota не видит твоих матчей. Включи в настройках Dota «Общедоступная история матчей» и сыграй хотя бы одну игру.';
+  } catch (e) {
+    $('#poolStatus').textContent = e.message;
+  }
+  render();
+}
+$('#poolPeriod').addEventListener('change', loadMyStats);
 
 async function loadMe() {
   let error = '';
@@ -412,24 +426,14 @@ async function loadMe() {
   }
   try { ME = await api('/api/me'); } catch { ME = null; }
   renderAccount(error);
-  if (!ME?.logged_in) return;
-  try {
-    const r = await api('/api/me/heroes');
-    MYSTATS = new Map(r.heroes.map((h) => [h.id, h]));
-    if (!MYSTATS.size) {
-      $('#poolStatus').textContent = 'OpenDota не видит твоих матчей. Включи в настройках Dota «Общедоступная история матчей» и сыграй хотя бы одну игру.';
-    }
-  } catch (e) {
-    $('#poolStatus').textContent = e.message;
-  }
-  render();
+  if (ME?.logged_in) loadMyStats();
 }
 
 $('#poolImport').addEventListener('click', () => {
-  // Герои, сыгранные хотя бы 5 раз за полгода, до 15 самых частых. Уровни, что уже стоят, сохраняем.
+  // Герои, сыгранные хотя бы 5 раз за выбранный период, до 15 самых частых. Уровни, что уже стоят, сохраняем.
   const mine = [...MYSTATS.values()].filter((h) => h.games >= 5 && heroById.has(h.id)).slice(0, 15);
   if (!mine.length) {
-    $('#poolStatus').textContent = 'Не нашлось героев, сыгранных хотя бы 5 раз за полгода.';
+    $('#poolStatus').textContent = 'Не нашлось героев, сыгранных хотя бы 5 раз за этот период.';
     return;
   }
   let added = 0;

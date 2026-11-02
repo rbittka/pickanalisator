@@ -191,6 +191,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       <div class="pool-list" id="poolList"></div>
       <div class="pool-actions">
         <button type="button" id="poolImport" hidden>Загрузить моих героев из Steam</button>
+        <select id="poolPeriod" hidden aria-label="Период статистики">
+          <option value="180">за полгода</option>
+          <option value="all">за всё время</option>
+        </select>
         <span class="note" id="poolStatus"></span>
       </div>
       <div class="note" id="poolHint">Нажми «★ Мой пул» и выбери в сетке героев, на которых играешь. Уровень — как в Dota Plus. Пул хранится только в этом браузере.</div>

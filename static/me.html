@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Мой разбор — Анализатор пиков Dota 2</title>
+<style>
+:root {
+  --bg: #0f1216; --panel: #171b21; --panel2: #1e232b; --line: #2a3039;
+  --text: #e6e9ee; --muted: #8b94a3; --accent: #d9a441; --pos: #3fb950; --neg: #f85149;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; padding-block: 12px; border-bottom: 1px solid var(--line); }
+header h1 { font-size: 18px; margin: 0; }
+a { color: var(--accent); }
+button { font: inherit; color: inherit; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+button.on { border-color: var(--accent); color: var(--accent); }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+main { display: grid; gap: 16px; padding-block: 16px; max-width: 1100px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+.panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 4px; }
+.panel .why { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.summary { display: flex; flex-wrap: wrap; gap: 24px; align-items: baseline; }
+.summary b { font-size: 24px; font-variant-numeric: tabular-nums; }
+.summary span { color: var(--muted); font-size: 12px; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+.list { display: grid; gap: 6px; }
+.item { display: flex; align-items: center; gap: 10px; background: var(--panel2); border-radius: 6px; padding: 6px 8px; }
+.item img { width: 56px; border-radius: 4px; }
+.item .name { font-weight: 600; }
+.item .sub { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.item .val { margin-left: auto; font-weight: 700; font-variant-numeric: tabular-nums; }
+.p { color: var(--pos); } .n { color: var(--neg); }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+th { font-size: 12px; color: var(--muted); font-weight: 500; }
+td img { width: 44px; border-radius: 3px; vertical-align: middle; margin-right: 8px; }
+.scroll { overflow-x: auto; }
+.bench { display: grid; gap: 12px; }
+.metric { display: grid; grid-template-columns: 170px 1fr 70px; gap: 10px; align-items: center; font-size: 13px; }
+@media (max-width: 560px) { .metric { grid-template-columns: 1fr 60px; } .metric .bar { grid-column: 1 / -1; } }
+.bar { height: 8px; background: var(--panel2); border-radius: 4px; overflow: hidden; }
+.bar div { height: 100%; background: var(--accent); }
+.empty, .state { color: var(--muted); padding: 16px 0; }
+.state.err { color: var(--neg); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Мой разбор</h1>
+    <div class="row"><a href="/">← К драфту</a><span class="state" id="who" style="padding:0"></span></div>
+  </div>
+  <div class="row" id="period">
+    <button type="button" data-period="180" class="on">Полгода</button>
+    <button type="button" data-period="all">Всё время</button>
+  </div>
+</header>
+
+<main>
+  <div class="state" id="state">Загружаю твои матчи…</div>
+
+  <section class="panel" id="summary" hidden></section>
+
+  <div class="cols">
+    <section class="panel" id="againstPanel" hidden>
+      <h2>Против кого ты проигрываешь</h2>
+      <p class="why">Вражеские герои, против которых твой винрейт ниже твоего обычного. Учтены герои, которых ты встречал хотя бы 8 раз; малые выборки сглажены.</p>
+      <div class="list" id="against"></div>
+    </section>
+    <section class="panel" id="withPanel" hidden>
+      <h2>С кем ты выигрываешь</h2>
+      <p class="why">Союзные герои, с которыми ты побеждаешь чаще обычного.</p>
+      <div class="list" id="with"></div>
+    </section>
+  </div>
+
+  <section class="panel" id="patchPanel" hidden>
+    <h2 id="patchTitle">Твои герои в патче</h2>
+    <p class="why">Винрейт в текущем патче и в прошлом. Показаны герои, на которых сыграно хотя бы 5 игр в одном из патчей.</p>
+    <div class="scroll"><table id="patch"></table></div>
+  </section>
+
+  <section class="panel" id="benchPanel" hidden>
+    <h2>Ты против других игроков</h2>
+    <p class="why">Средние показатели в твоих матчах на самых частых героях. Полоса — доля всех игроков на этом герое, у которых показатель хуже твоего (по данным OpenDota).</p>
+    <div class="bench" id="bench"></div>
+  </section>
+</main>
+<script src="me.js"></script>
+</body>
+</html>

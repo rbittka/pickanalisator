@@ -14,7 +14,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, scoring, steam
+from . import analysis, config, scoring, steam
 from .data import Stats, Store, portrait_path
 from .limits import SlidingWindow, client_ip
 from .recognize import BadImage, References, build_references, match_top_bar, normalize, open_image
@@ -115,7 +115,7 @@ async def security_headers(request: Request, call_next):
         response.headers["Content-Security-Policy"] = CSP
     # Страницу и скрипт браузер должен перепроверять, иначе после обновления сайта
     # он показывает старую версию (по ETag это дёшево: 304 без тела).
-    if request.url.path in ("/", "/index.html", "/app.js"):
+    if request.url.path in ("/", "/index.html", "/app.js", "/me.html", "/me.js"):
         response.headers["Cache-Control"] = "no-cache"
     return response
 
@@ -320,18 +320,35 @@ async def me(request: Request):
     return {"logged_in": True, **await players.profile(account_id)}
 
 
-@app.get("/api/me/heroes")
-async def my_heroes(request: Request):
-    """Герои игрока за полгода: игры и победы (из OpenDota)."""
+Period = Literal["180", "all"]
+
+
+def _logged_in(request: Request) -> int:
     account_id = _account(request)
     if not account_id:
         raise HTTPException(401, "Нужно войти через Steam.")
     if not _me_per_ip.hit(client_ip(request)):
         raise HTTPException(429, "Слишком много запросов, подожди минуту.")
-    heroes = await players.heroes(account_id)
+    return account_id
+
+
+@app.get("/api/me/heroes")
+async def my_heroes(request: Request, period: Period = "180"):
+    """Герои игрока за полгода или за всё время: игры и победы (из OpenDota)."""
+    account_id = _logged_in(request)
+    heroes = await players.heroes(account_id, analysis.period_days(period))
     if heroes is None:
         raise HTTPException(503, "OpenDota сейчас не отвечает, попробуй позже.")
     return {"heroes": heroes}
+
+
+@app.get("/api/me/analysis")
+async def my_analysis(request: Request, period: Period = "180"):
+    """Разбор игрока: против кого проигрывает, с кем выигрывает, патч, сравнение с другими."""
+    result = await analysis.analyze(players, _logged_in(request), period)
+    if result is None:
+        raise HTTPException(503, "OpenDota сейчас не отвечает или история матчей закрыта. Попробуй позже.")
+    return result
 
 
 # --- Сайт ---

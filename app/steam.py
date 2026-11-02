@@ -65,12 +65,13 @@ class PlayerCache:
     """Профиль и герои игрока из OpenDota с кэшем на 10 минут (OpenDota лимитирует запросы)."""
 
     def __init__(self) -> None:
-        self._data: dict[tuple[str, int], tuple[float, object]] = {}
+        self._data: dict[tuple, tuple[float, object, float]] = {}
 
-    async def _get(self, kind: str, account_id: int, url: str, params: dict | None = None):
-        key = (kind, account_id)
+    async def get(self, kind: str, account_id: int, url: str, params: dict | None = None, ttl: float = CACHE_TTL):
+        """JSON из OpenDota или None. account_id=0 — общие данные (патчи, бенчмарки)."""
+        key = (kind, account_id, tuple(sorted((params or {}).items())))
         hit = self._data.get(key)
-        if hit and time.monotonic() - hit[0] < CACHE_TTL:
+        if hit and time.monotonic() - hit[0] < hit[2]:
             return hit[1]
         try:
             async with httpx.AsyncClient(timeout=20, headers={"User-Agent": "dota-draft-site"}) as c:
@@ -82,11 +83,11 @@ class PlayerCache:
             return None
         if len(self._data) >= CACHE_MAX:
             self._data.clear()
-        self._data[key] = (time.monotonic(), value)
+        self._data[key] = (time.monotonic(), value, ttl)
         return value
 
     async def profile(self, account_id: int) -> dict:
-        body = await self._get("profile", account_id, f"{API}/players/{account_id}") or {}
+        body = await self.get("profile", account_id, f"{API}/players/{account_id}") or {}
         p = body.get("profile") or {}
         avatar = p.get("avatarmedium") or ""
         return {
@@ -98,8 +99,9 @@ class PlayerCache:
             "found": bool(p),
         }
 
-    async def heroes(self, account_id: int, days: int = 180) -> list[dict] | None:
-        rows = await self._get("heroes", account_id, f"{API}/players/{account_id}/heroes", {"date": days})
+    async def heroes(self, account_id: int, days: int | None = 180) -> list[dict] | None:
+        """Игры и победы по героям за `days` дней (None — за всё время)."""
+        rows = await self.get("heroes", account_id, f"{API}/players/{account_id}/heroes", {"date": days} if days else None)
         if rows is None:
             return None
         out = []
