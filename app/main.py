@@ -132,6 +132,7 @@ class AnalyzeIn(BaseModel):
     replace: Replace | None = None
     weights: WeightsIn = Field(default_factory=WeightsIn)
     limit: int = Field(15, ge=1, le=60)
+    pool: list[int] = Field(default_factory=list, max_length=150)  # личный пул героев игрока
 
 
 # --- API ---
@@ -199,11 +200,14 @@ def analyze(body: AnalyzeIn, request: Request):
 
     current = scoring.evaluate(s, current_slot.id, current_slot.pos, allies, enemies, w) if current_slot else None
     recs = scoring.recommend(s, allies, enemies, exclude, pos, w, body.limit)
+    # Из пула ищем на любой позиции, кроме уже занятых: игрок сам знает, кем играет.
+    pool_recs = scoring.recommend(s, allies, enemies, exclude, pos, w, 5, only=set(body.pool)) if body.pool else []
     if current:
-        for r in recs:
+        for r in recs + pool_recs:
             r["delta"] = r["score"] - current["score"]
     return {
         "recommendations": recs,
+        "pool_recommendations": pool_recs,
         "current": current,
         "advantage": scoring.draft_advantage(s, ally, enemy),
     }

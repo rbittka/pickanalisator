@@ -160,3 +160,13 @@ def test_security_headers_and_admin(heroes, monkeypatch):
     assert r.headers["x-content-type-options"] == "nosniff"
     monkeypatch.setattr(main.config, "ADMIN_TOKEN", "secret")
     assert client.post("/api/admin/refresh", headers={"x-admin-token": "nope"}).status_code == 403
+
+
+def test_pool_recommendations(heroes, monkeypatch):
+    monkeypatch.setattr(main.store, "stats", synthetic_stats(heroes))
+    client = TestClient(main.app)
+    body = {"enemy": [{"id": 14, "pos": 4}], "pool": [2, 3, 1]}
+    j = client.post("/api/analyze", json=body).json()
+    assert {r["id"] for r in j["pool_recommendations"]} <= {1, 2, 3}
+    assert j["pool_recommendations"][0]["id"] == 1  # Anti-Mage контрит Pudge
+    assert client.post("/api/analyze", json={"enemy": [{"id": 14, "pos": 4}]}).json()["pool_recommendations"] == []

@@ -72,11 +72,14 @@ def evaluate(stats: Stats, hero_id: int, pos: int, allies: list[Slot], enemies: 
 
 
 def recommend(stats: Stats, allies: list[Slot], enemies: list[Slot], exclude: set[int],
-              pos: int, w: Weights, limit: int = 15) -> list[dict]:
+              pos: int, w: Weights, limit: int = 15, only: set[int] | None = None) -> list[dict]:
+    """Лучшие герои для драфта; `only` — выбирать только из этих героев (личный пул)."""
     taken_pos = {s.pos for s in allies}
     out = []
     for hero in stats.heroes.values():
         if hero.id in exclude or hero.id >= len(stats.games) or not stats.games[hero.id]:
+            continue
+        if only is not None and hero.id not in only:
             continue
         best = None
         for p, share in hero.positions.items():

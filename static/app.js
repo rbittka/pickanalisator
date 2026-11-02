@@ -5,6 +5,12 @@ const RANKS = { 1: 'Herald', 2: 'Guardian', 3: 'Crusader', 4: 'Archon', 5: 'Lege
 let HEROES = [], heroById = new Map();
 const state = { ally: [], enemy: [], bans: [], mode: 'ally', side: 'ally', pos: 0, search: '', replace: null };
 
+// Личный пул героев: [{id, level}] в localStorage этого браузера.
+let POOL = [];
+try { POOL = JSON.parse(localStorage.getItem('pool') || '[]').filter((p) => Number.isInteger(p.id)); } catch { POOL = []; }
+function savePool() { try { localStorage.setItem('pool', JSON.stringify(POOL)); } catch { /* приватный режим */ } }
+const poolLevel = (id) => POOL.find((p) => p.id === id)?.level;
+
 const $ = (s) => document.querySelector(s);
 const pp = (x, d = 1) => (x >= 0 ? '+' : '') + (x * 100).toFixed(d);
 const cls = (x) => (x >= 0 ? 'p' : 'n');
@@ -57,6 +63,13 @@ function renderSlots(key) {
 
 function addHero(id, mode = state.mode, pos) {
   if (mode === 'ban') { state.bans.push(id); render(); return; }
+  if (mode === 'pool') {
+    const i = POOL.findIndex((p) => p.id === id);
+    if (i >= 0) POOL.splice(i, 1); else POOL.push({ id, level: 1 });
+    savePool();
+    render();
+    return;
+  }
   if (state[mode].length >= 5) return;
   const h = heroById.get(id);
   const used = new Set(state[mode].map((s) => s.pos));
@@ -143,14 +156,26 @@ function renderBest(res) {
   else if (state.pos) title += ` · ${state.pos} · ${POS_NAMES[state.pos]}`;
   if (!state.ally.length && !state.enemy.length) title = 'Сильнейшие герои в мете сейчас';
   $('#bestTitle').textContent = title;
-  $('#bestList').innerHTML = list.map((r, i) => `
+  fillPicks('#bestList', list, 'Лучший выбор');
+  // Пул советуем только для своей команды.
+  const pool = state.side === 'ally' ? (res.pool_recommendations || []).slice(0, 3) : [];
+  $('#bestPoolTitle').hidden = !pool.length;
+  fillPicks('#bestPool', pool, 'Лучший из твоих');
+}
+
+function fillPicks(sel, list, badge) {
+  const rep = state.replace;
+  $(sel).innerHTML = list.map((r, i) => {
+    const lvl = poolLevel(r.id);
+    return `
     <div class="pick ${i ? '' : 'top'}">
       <div class="pick-head">
         ${heroImg(heroById.get(r.id))}
         <div>
-          ${i ? '' : '<div class="pick-badge">Лучший выбор</div>'}
+          ${i ? '' : `<div class="pick-badge">${badge}</div>`}
           <div class="name">${esc(r.name)}</div>
           <div class="sub">${r.pos} · ${POS_NAMES[r.pos]}</div>
+          ${lvl ? `<div class="pick-level">★ твой уровень ${lvl}</div>` : ''}
         </div>
       </div>
       <ul>${reasons(r)}</ul>
@@ -158,8 +183,20 @@ function renderBest(res) {
         <span class="score ${cls(r.score)}">${pp(r.score)}</span>
         <button type="button" data-i="${i}">${rep ? 'Заменить' : 'Взять'}</button>
       </div>
-    </div>`).join('');
-  $('#bestList').querySelectorAll('button[data-i]').forEach((b) => b.addEventListener('click', () => pickRecommendation(list[+b.dataset.i])));
+    </div>`;
+  }).join('');
+  $(sel).querySelectorAll('button[data-i]').forEach((b) => b.addEventListener('click', () => pickRecommendation(list[+b.dataset.i])));
+}
+
+function renderPool() {
+  const items = [...POOL].sort((a, b) => b.level - a.level).filter((p) => heroById.has(p.id));
+  $('#poolHint').hidden = items.length > 0;
+  $('#poolList').innerHTML = items.map((p) => {
+    const h = heroById.get(p.id);
+    return `<div class="pool-item">${heroImg(h)}<span>${esc(h.name)}</span>
+      <label>ур. <input type="number" min="1" max="30" value="${p.level}" data-level="${p.id}" aria-label="Уровень ${esc(h.name)}"></label>
+      <button type="button" class="x" data-drop="${p.id}" aria-label="Убрать ${esc(h.name)} из пула">×</button></div>`;
+  }).join('');
 }
 
 function renderAdvantage(adv) {
@@ -181,7 +218,7 @@ async function runAnalyze() {
   const seq = ++analyzeSeq;
   const body = {
     ally: state.ally, enemy: state.enemy, bans: state.bans, side: state.side, pos: state.pos,
-    replace: state.replace, limit: 15,
+    replace: state.replace, limit: 15, pool: POOL.map((p) => p.id),
     weights: { counter: +$('#wCounter').value, synergy: +$('#wSyn').value, meta: +$('#wMeta').value },
   };
   $('#recs').classList.add('loading');
@@ -203,7 +240,8 @@ function renderGrid() {
   const q = state.search.trim().toLowerCase();
   $('#grid').innerHTML = HEROES.map((h) => {
     const match = !q || h.name.toLowerCase().includes(q) || h.npc.includes(q);
-    return `<div class="hero ${taken.has(h.id) ? 'used' : ''} ${match ? '' : 'dim'}" data-id="${h.id}">${heroImg(h)}<div class="nm">${esc(h.name)}</div></div>`;
+    const star = poolLevel(h.id) ? '<span class="star" title="В твоём пуле">★</span>' : '';
+    return `<div class="hero ${taken.has(h.id) ? 'used' : ''} ${match ? '' : 'dim'}" data-id="${h.id}">${heroImg(h)}${star}<div class="nm">${esc(h.name)}</div></div>`;
   }).join('');
 }
 
@@ -221,8 +259,25 @@ function render() {
     `<button data-pos="${p}" class="${state.pos === p ? 'on' : ''}">${p ? `${p} · ${POS_NAMES[p]}` : 'Любая'}</button>`).join('');
   for (const k of ['wCounter', 'wSyn', 'wMeta']) $('#' + k + 'V').textContent = '×' + (+$('#' + k).value).toFixed(1);
   renderGrid();
+  renderPool();
   scheduleAnalyze();
 }
+
+$('#poolList').addEventListener('change', (e) => {
+  const id = +e.target.dataset.level;
+  const p = POOL.find((x) => x.id === id);
+  if (!p) return;
+  p.level = Math.max(1, Math.min(30, Math.round(+e.target.value) || 1));
+  savePool();
+  render();
+});
+$('#poolList').addEventListener('click', (e) => {
+  const id = +e.target.dataset.drop;
+  if (!id) return;
+  POOL = POOL.filter((p) => p.id !== id);
+  savePool();
+  render();
+});
 
 // --- Распознавание драфта по скриншоту (на сервере) ---
 let shotBlob = null, ourSide = 'radiant';
