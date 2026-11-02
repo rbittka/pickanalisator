@@ -102,6 +102,22 @@ main > * { min-width: 0; }
 .shot-status.err { color: var(--neg); }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .loading { opacity: .55; transition: opacity .15s; }
+
+.best { margin-top: 16px; }
+.best-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 760px) { .best-list { grid-template-columns: 1fr; } }
+.pick { display: flex; flex-direction: column; gap: 8px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 10px; min-width: 0; }
+.pick.top { border-color: var(--accent); }
+.pick-head { display: flex; gap: 10px; align-items: center; }
+.pick-head img { width: 88px; max-width: 40%; border-radius: 5px; }
+.pick-head .name { font-weight: 700; font-size: 15px; }
+.pick-head .sub { font-size: 12px; color: var(--muted); }
+.pick-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--accent); }
+.pick ul { margin: 0; padding-left: 16px; font-size: 12px; line-height: 1.45; }
+.pick li.minus { color: var(--muted); }
+.pick-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }
+.pick-foot .score { font-size: 16px; text-align: left; min-width: 0; }
+.pick-foot button { border-color: var(--accent); color: var(--accent); }
 </style>
 </head>
 <body>
@@ -143,6 +159,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       <div class="bans" id="bans"></div>
       <div class="adv" id="adv"></div>
       <div class="note">Клик по герою в драфте — подобрать ему замену, × — убрать из драфта.</div>
+    </div>
+
+    <div class="panel best" id="best" hidden>
+      <h2 id="bestTitle">Лучший пик</h2>
+      <div class="best-list" id="bestList"></div>
     </div>
 
     <div class="toolbar">

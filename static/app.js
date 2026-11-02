@@ -103,14 +103,63 @@ function renderRecs(res) {
   const list = res.recommendations;
   el.innerHTML = head + (list.length ? list.map((r, i) => recCard(r, i, false)).join('') : '<div class="empty">Нет подходящих героев</div>');
   $('#repCancel')?.addEventListener('click', () => { state.replace = null; render(); });
-  el.querySelectorAll('.rec-top[data-i]').forEach((n) => n.addEventListener('click', () => {
-    const r = list[+n.dataset.i];
-    if (rep && state[rep.team][rep.index]) {
-      state[rep.team][rep.index] = { id: r.id, pos: r.pos };
-      state.replace = null;
-      render();
-    } else addHero(r.id, state.side, r.pos);
-  }));
+  el.querySelectorAll('.rec-top[data-i]').forEach((n) => n.addEventListener('click', () => pickRecommendation(list[+n.dataset.i])));
+}
+
+// Взять рекомендованного героя: в режиме замены — вместо текущего, иначе в команду выбранной стороны.
+function pickRecommendation(r) {
+  const rep = state.replace;
+  if (rep && state[rep.team][rep.index]) {
+    state[rep.team][rep.index] = { id: r.id, pos: r.pos };
+    state.replace = null;
+    render();
+  } else addHero(r.id, state.side, r.pos);
+}
+
+// Короткое объяснение по цифрам: против кого силён, с кем сочетается, где слабое место.
+const STRONG = 0.01;
+function reasons(r) {
+  const named = (list) => list.map((x) => `${esc(heroById.get(x.id).name)} (${pp(x.adv)})`).join(', ');
+  const plus = [], minus = [];
+  const good = r.vs.filter((x) => x.adv >= STRONG).sort((a, b) => b.adv - a.adv).slice(0, 2);
+  const syn = r.with.filter((x) => x.adv >= STRONG).sort((a, b) => b.adv - a.adv).slice(0, 2);
+  const bad = r.vs.filter((x) => x.adv <= -STRONG).sort((a, b) => a.adv - b.adv).slice(0, 1);
+  if (good.length) plus.push(`силён против ${named(good)}`);
+  if (syn.length) plus.push(`сочетается с ${named(syn)}`);
+  if (r.meta >= STRONG) plus.push(`винрейт ${(r.winrate * 100).toFixed(1)}% — силён в текущей мете`);
+  if (!plus.length) plus.push(`надёжный вариант: без явных слабостей в этом драфте, винрейт ${(r.winrate * 100).toFixed(1)}%`);
+  if (bad.length) minus.push(`осторожно с ${named(bad)}`);
+  if (r.delta != null) (r.delta >= 0 ? plus : minus).push(`${pp(r.delta)} п.п. к текущему герою`);
+  return plus.map((t) => `<li>${t}</li>`).join('') + minus.map((t) => `<li class="minus">${t}</li>`).join('');
+}
+
+function renderBest(res) {
+  const list = res.recommendations.slice(0, 3);
+  $('#best').hidden = !list.length;
+  if (!list.length) return;
+  const rep = state.replace;
+  let title = state.side === 'ally' ? 'Лучший пик для нас' : 'Лучший пик для противников';
+  if (rep) title = `Лучшая замена для ${heroById.get(state[rep.team][rep.index].id).name}`;
+  else if (state.pos) title += ` · ${state.pos} · ${POS_NAMES[state.pos]}`;
+  if (!state.ally.length && !state.enemy.length) title = 'Сильнейшие герои в мете сейчас';
+  $('#bestTitle').textContent = title;
+  $('#bestList').innerHTML = list.map((r, i) => `
+    <div class="pick ${i ? '' : 'top'}">
+      <div class="pick-head">
+        ${heroImg(heroById.get(r.id))}
+        <div>
+          ${i ? '' : '<div class="pick-badge">Лучший выбор</div>'}
+          <div class="name">${esc(r.name)}</div>
+          <div class="sub">${r.pos} · ${POS_NAMES[r.pos]}</div>
+        </div>
+      </div>
+      <ul>${reasons(r)}</ul>
+      <div class="pick-foot">
+        <span class="score ${cls(r.score)}">${pp(r.score)}</span>
+        <button type="button" data-i="${i}">${rep ? 'Заменить' : 'Взять'}</button>
+      </div>
+    </div>`).join('');
+  $('#bestList').querySelectorAll('button[data-i]').forEach((b) => b.addEventListener('click', () => pickRecommendation(list[+b.dataset.i])));
 }
 
 function renderAdvantage(adv) {
@@ -140,6 +189,7 @@ async function runAnalyze() {
     const res = await api('/api/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (seq !== analyzeSeq) return;
     renderRecs(res);
+    renderBest(res);
     renderAdvantage(res.advantage);
   } catch (e) {
     if (seq === analyzeSeq) $('#recs').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
