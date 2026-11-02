@@ -65,7 +65,7 @@ class BadImage(ValueError):
     """Файл не картинка нужного формата или слишком большой; текст — для пользователя."""
 
 
-FORMATS = {"PNG", "JPEG", "MPO", "WEBP"}  # MPO — так Pillow называет JPEG с айфона
+FORMATS = {"PNG", "JPEG", "MPO", "WEBP", "TIFF"}  # MPO — JPEG с айфона, TIFF — буфер обмена Mac
 MAX_SIDE = 2400  # для Claude больше не нужно: API всё равно ужимает до ~1.2 Мп
 MAX_ASPECT = 4.5  # шире 32:9 (3.56) экранов не бывает; фото может быть вертикальным
 
@@ -84,7 +84,11 @@ def open_image(data: bytes) -> Image.Image:
     # «Нитка» вроде 30000×1 весит байты, но при приведении к высоте 720 разрослась бы до гигабайт.
     if not (1 / MAX_ASPECT <= im.width / im.height <= MAX_ASPECT):
         raise BadImage("Странные пропорции изображения. Подойдёт обычный скриншот экрана.")
+    if im.format in ("JPEG", "MPO"):
+        im.draft("RGB", (MAX_SIDE, MAX_SIDE))  # JPEG распаковывается сразу в уменьшенном виде
     try:
+        if max(im.size) >= 2 * MAX_SIDE:
+            im = im.reduce(max(im.size) // MAX_SIDE)  # быстрое целочисленное уменьшение
         im = ImageOps.exif_transpose(im).convert("RGB")
     except (OSError, Image.DecompressionBombError):
         raise BadImage("Файл повреждён или обрезан.")
@@ -103,7 +107,20 @@ def load_screenshot(data: bytes) -> Image.Image:
 
 
 def match_top_bar(im: Image.Image, refs: References) -> dict[str, list[Hero]]:
-    """Возвращает героев Света и Тьмы слева направо; нераспознанные слоты пропускаются."""
+    """Возвращает героев Света и Тьмы слева направо; нераспознанные слоты пропускаются.
+
+    Сначала ищем панель у самого верха экрана (полноэкранная игра) — это быстро.
+    Только если там почти ничего не нашлось, ищем ниже: скриншот окна с заголовком.
+    """
+    out = _scan(im, refs, range(0, 9, 2))
+    if len(out["radiant"]) + len(out["dire"]) < 6:
+        lower = _scan(im, refs, range(10, 41, 2))
+        if len(lower["radiant"]) + len(lower["dire"]) > len(out["radiant"]) + len(out["dire"]):
+            out = lower
+    return out
+
+
+def _scan(im: Image.Image, refs: References, ys: range) -> dict[str, list[Hero]]:
     H, mid = im.height, im.width / 2
     # Работаем только с верхней полосой: так ресайзы не трогают остальной экран.
     strip = im.crop((0, 0, im.width, 100))
@@ -113,10 +130,11 @@ def match_top_bar(im: Image.Image, refs: References) -> dict[str, list[Hero]]:
             k = 4 - i if side < 0 else i  # слева направо
             cx0 = mid + side * (0.182 + 0.115 * k) * H
             best = None
+            # Грубо: шаг 3 px по горизонтали — грубый вектор 16×9 всё равно сглаживает сдвиг.
             for w in range(70, 87, 4):
                 h = w * 9 / 16
-                for y in range(0, 41, 2):  # с запасом на заголовок окна
-                    for dx in range(-18, 19, 2):
+                for y in ys:
+                    for dx in range(-18, 19, 3):
                         x = cx0 + dx - w / 2
                         if not _inside(strip, x, y, w, h):
                             continue
@@ -131,13 +149,15 @@ def match_top_bar(im: Image.Image, refs: References) -> dict[str, list[Hero]]:
                 w = cw + dw
                 h = w * 9 / 16
                 for dy in (-1, 0, 1):
-                    for dx in (-1, 0, 1):
+                    for dx in (-2, -1, 0, 1, 2):
                         x, y = cx + dx - w / 2, cy + dy
                         if not _inside(strip, x, y, w, h):
                             continue
                         idx, d, margin = _closest(_vec(strip, FINE, (x, y, x + w, y + h)), refs.fine)
                         if best is None or d < best[1]:
                             best = (idx, d, margin)
+            if best is None:
+                continue
             idx, d, margin = best
             if d < MAX_DIST and margin > MIN_MARGIN:
                 out[team].append(refs.heroes[idx])

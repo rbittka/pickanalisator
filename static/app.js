@@ -321,6 +321,8 @@ function setShot(blob) {
   const prev = $('#shotPreview');
   if (prev.src) URL.revokeObjectURL(prev.src);
   prev.src = URL.createObjectURL(blob);
+  // Некоторые форматы (например, TIFF из буфера обмена) браузер не показывает — тогда просто пишем, что файл выбран.
+  prev.onerror = () => { prev.hidden = true; $('#shotHint').hidden = false; $('#shotHint').innerHTML = '<b>Картинка загружена</b><br>Нажми «Распознать героев»'; };
   prev.hidden = false;
   $('#shotHint').hidden = true;
   $('#shotRun').disabled = false;
@@ -329,8 +331,9 @@ function setShot(blob) {
 
 async function recognize() {
   $('#shotRun').disabled = true;
-  setShotStatus('Ищу героев на скриншоте…');
-  const slow = setTimeout(() => setShotStatus('Верхняя панель не найдена, распознаю фото с помощью Claude, это до минуты…'), 2500);
+  setShotStatus('Распознаю героев…');
+  // Честная подсказка при долгом ожидании, без догадок о том, что делает сервер.
+  const slow = setTimeout(() => setShotStatus('Распознаю героев… сервер просыпается или разбирает фото, это может занять до минуты.'), 8000);
   try {
     const form = new FormData();
     form.append('image', shotBlob, 'draft');
@@ -342,13 +345,13 @@ async function recognize() {
     for (const id of theirs.slice(0, 5)) addHero(id, 'enemy');
     for (const id of ids(r.bans)) addHero(id, 'ban');
     render();
-    const how = r.method === 'claude' ? 'с помощью Claude' : 'по портретам верхней панели';
     const total = ours.length + theirs.length;
     setShotStatus(total
-      ? `Найдено ${how}: ${ours.length} у нас, ${theirs.length} у противников${r.bans.length ? `, банов ${r.bans.length}` : ''}. Если что-то не так, поправь драфт вручную.`
+      ? `Найдено: ${ours.length} у нас, ${theirs.length} у противников${r.bans.length ? `, банов ${r.bans.length}` : ''}. Если что-то не так, поправь драфт вручную.`
       : 'Героев на снимке не нашлось. Нужен скриншот всего экрана игры, где видна верхняя панель с портретами.', !total);
   } catch (e) {
-    setShotStatus(e.message, true);
+    // Сетевой сбой в браузере приходит без кода ответа («Load failed», «Failed to fetch»).
+    setShotStatus(e.status ? e.message : 'Сервер не ответил. Проверь интернет и попробуй ещё раз через минуту.', true);
   } finally {
     clearTimeout(slow);
     $('#shotRun').disabled = !shotBlob;
