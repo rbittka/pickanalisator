@@ -320,7 +320,7 @@ async def me(request: Request):
     return {"logged_in": True, **await players.profile(account_id)}
 
 
-Period = Literal["180", "all"]
+Period = Literal["7", "30", "180", "all"]
 
 
 def _logged_in(request: Request) -> int:

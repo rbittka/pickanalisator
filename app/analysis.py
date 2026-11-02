@@ -30,8 +30,11 @@ METRICS = [
 ]
 
 
+PERIODS = {"7": 7, "30": 30, "180": 180, "all": None}
+
+
 def period_days(period: str) -> int | None:
-    return 180 if period == "180" else None
+    return PERIODS.get(period)
 
 
 def _wr(wins: int, games: int) -> float:
