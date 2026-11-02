@@ -18,6 +18,10 @@ body { margin: 0; padding-left: max(16px, env(safe-area-inset-left, 0px)); paddi
 header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; padding-block: 12px; border-bottom: 1px solid var(--line); }
 header h1 { font-size: 18px; margin: 0; }
 header .meta { color: var(--muted); font-size: 12px; }
+.tabs { display: flex; gap: 4px; margin-top: 8px; }
+.tabs a { padding: 5px 12px; border-radius: 6px; color: var(--muted); text-decoration: none; border: 1px solid transparent; }
+.tabs a:hover { color: var(--text); }
+.tabs a.on { color: var(--accent); border-color: var(--accent); background: var(--panel2); }
 button, select, input { font: inherit; color: inherit; }
 button { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
 button:hover { border-color: var(--muted); }
@@ -25,16 +29,23 @@ button.on { border-color: var(--accent); color: var(--accent); }
 main { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 16px; padding-block: 16px; }
 main > * { min-width: 0; }
 @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
-@media (max-width: 560px) { .teams { grid-template-columns: 1fr; } }
+
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
 .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
 
 .teams { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .team h3 { margin: 0 0 8px; font-size: 14px; }
 .team.ally h3 { color: var(--ally); } .team.enemy h3 { color: var(--enemy); }
-.slots { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.slots { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+@media (max-width: 640px) { .teams { grid-template-columns: 1fr; } .slot select { font-size: 10px; } }
 .slot { position: relative; aspect-ratio: 16/9; border: 1px dashed var(--line); border-radius: 6px; overflow: hidden; background: var(--panel2); }
 .slot img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: pointer; }
+.slot.empty { display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--muted); font-size: 20px; }
+.slot.empty:hover { border-color: var(--muted); }
+.slot.target { border: 2px solid var(--accent); color: var(--accent); }
+#enemy .slot.target { border-color: var(--enemy); color: var(--enemy); }
+#ally .slot.target { border-color: var(--ally); color: var(--ally); }
+.hint { font-size: 12px; flex-basis: 100%; }
 .slot .x { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; padding: 0; line-height: 18px; font-size: 14px; border-radius: 50%; background: rgba(0,0,0,.7); border-color: transparent; }
 .slot .x:hover { border-color: var(--neg); color: var(--neg); }
 .slot.replacing { border: 2px solid var(--accent); }
@@ -47,7 +58,12 @@ main > * { min-width: 0; }
 .delta { font-size: 11px; font-weight: 600; }
 .slot select { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; font-size: 11px; background: rgba(0,0,0,.75); border: 0; padding: 1px 2px; }
 .bans { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; min-height: 28px; align-items: center; }
-.bans img { height: 26px; border-radius: 4px; filter: grayscale(1) brightness(.7); cursor: pointer; }
+.bans .ban { position: relative; display: inline-flex; cursor: pointer; }
+.bans img { height: 26px; border-radius: 4px; filter: grayscale(1) brightness(.7); }
+.bans .ban b { position: absolute; top: -6px; right: -5px; width: 14px; height: 14px; line-height: 13px; text-align: center; font-size: 11px; border-radius: 50%; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); }
+.bans .ban:hover b { color: var(--neg); border-color: var(--neg); }
+.hero.banned { filter: grayscale(1); opacity: .35; }
+.hero.banned::after { content: "БАН"; position: absolute; top: 2px; left: 4px; font-size: 9px; font-weight: 700; color: var(--neg); }
 .bans .lbl { color: var(--muted); font-size: 12px; margin-right: 4px; }
 .adv { margin-top: 12px; }
 .adv .bar { height: 8px; border-radius: 4px; background: var(--enemy); overflow: hidden; }
@@ -142,6 +158,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   <div>
     <h1>Анализатор пиков Dota 2</h1>
     <div class="meta" id="meta"></div>
+    <nav class="tabs"><a href="/" class="on" aria-current="page">Драфт</a><a href="/me.html">Мой разбор</a></nav>
   </div>
   <div style="display:flex;gap:8px;align-items:center">
     <div class="account" id="account"></div>
@@ -208,6 +225,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
         <button data-mode="pool" title="Отметь героев, на которых ты играешь">★ Мой пул</button>
       </div>
       <input type="search" id="search" placeholder="Поиск героя…">
+      <span class="k hint" id="gridHint">Клик — в подсвеченный слот · правый клик — врагам · Alt + клик — бан · клик по пустому слоту выбирает команду</span>
     </div>
     <div class="grid" id="grid"></div>
   </section>

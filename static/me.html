@@ -15,6 +15,10 @@
 body { margin: 0; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; padding-block: 12px; border-bottom: 1px solid var(--line); }
 header h1 { font-size: 18px; margin: 0; }
+.tabs { display: flex; gap: 4px; margin-top: 8px; }
+.tabs a { padding: 5px 12px; border-radius: 6px; color: var(--muted); text-decoration: none; border: 1px solid transparent; }
+.tabs a:hover { color: var(--text); }
+.tabs a.on { color: var(--accent); border-color: var(--accent); background: var(--panel2); }
 a { color: var(--accent); }
 button { font: inherit; color: inherit; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
 button.on { border-color: var(--accent); color: var(--accent); }
@@ -54,7 +58,7 @@ td img { width: 44px; border-radius: 3px; vertical-align: middle; margin-right: 
 <header>
   <div>
     <h1>Мой разбор</h1>
-    <div class="row"><a href="/">← К драфту</a><span class="state" id="who" style="padding:0"></span></div>
+    <nav class="tabs"><a href="/">Драфт</a><a href="/me.html" class="on" aria-current="page">Мой разбор</a><span class="state" id="who" style="padding:5px 0"></span></nav>
   </div>
   <div class="row" id="period">
     <button type="button" data-period="180" class="on">Полгода</button>

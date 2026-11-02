@@ -64,6 +64,13 @@ function renderSlots(key) {
       div.querySelector('select').addEventListener('change', (e) => { s.pos = +e.target.value; render(); });
       div.title = replacing ? 'Клик — выйти из режима замены' : 'Клик — подобрать замену этому герою';
     }
+    else {
+      div.classList.add('empty');
+      if (state.mode === key && i === state[key].length) div.classList.add('target');
+      div.textContent = '+';
+      div.title = key === 'ally' ? 'Следующий герой — в твою команду' : 'Следующий герой — противникам';
+      div.addEventListener('click', () => setMode(key));
+    }
     el.appendChild(div);
   }
 }
@@ -82,7 +89,16 @@ function addHero(id, mode = state.mode, pos) {
   const used = new Set(state[mode].map((s) => s.pos));
   const p = pos || positionsOf(h).find((x) => !used.has(x)) || positionsOf(h)[0];
   state[mode].push({ id, pos: p });
+  // Команда заполнилась — следующие клики идут в другую, если там есть место.
+  const other = mode === 'ally' ? 'enemy' : 'ally';
+  if (state.mode === mode && state[mode].length >= 5 && state[other].length < 5) setMode(other, false);
   render();
+}
+
+function setMode(mode, redraw = true) {
+  state.mode = mode;
+  $('#mode').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.mode === mode));
+  if (redraw) { renderSlots('ally'); renderSlots('enemy'); }
 }
 
 function chip(x) {
@@ -245,12 +261,16 @@ async function runAnalyze() {
 }
 
 function renderGrid() {
-  const taken = new Set([...state.ally, ...state.enemy].map((s) => s.id).concat(state.bans));
+  const picked = new Set([...state.ally, ...state.enemy].map((s) => s.id));
+  const banned = new Set(state.bans);
   const q = state.search.trim().toLowerCase();
   $('#grid').innerHTML = HEROES.map((h) => {
     const match = !q || h.name.toLowerCase().includes(q) || h.npc.includes(q);
     const star = POOL.some((p) => p.id === h.id) ? '<span class="star" title="В твоём пуле">★</span>' : '';
-    return `<div class="hero ${taken.has(h.id) ? 'used' : ''} ${match ? '' : 'dim'}" data-id="${h.id}">${heroImg(h)}${star}<div class="nm">${esc(h.name)}</div></div>`;
+    // Забаненного героя можно снять кликом; взятого в драфт — убрать крестиком в слоте.
+    const cls = picked.has(h.id) ? 'used' : banned.has(h.id) ? 'banned' : '';
+    const title = banned.has(h.id) ? ' title="В бане — нажми, чтобы снять бан"' : '';
+    return `<div class="hero ${cls} ${match ? '' : 'dim'}" data-id="${h.id}"${title}>${heroImg(h)}${star}<div class="nm">${esc(h.name)}</div></div>`;
   }).join('');
 }
 
@@ -260,7 +280,7 @@ function render() {
   renderSlots('ally');
   renderSlots('enemy');
   $('#bans').innerHTML = '<span class="lbl">Баны:</span>' + (state.bans.length
-    ? state.bans.map((id, i) => heroImg(heroById.get(id), `data-ban="${i}"`)).join('')
+    ? state.bans.map((id, i) => `<span class="ban" data-ban="${i}" title="Снять бан">${heroImg(heroById.get(id))}<b>×</b></span>`).join('')
     : '<span class="lbl">нет</span>');
   $('#bans').querySelectorAll('[data-ban]').forEach((n) => n.addEventListener('click', () => { state.bans.splice(+n.dataset.ban, 1); render(); }));
   $('#side').hidden = $('#posTabs').hidden = !!state.replace;
@@ -338,17 +358,36 @@ async function recognize() {
 // --- События ---
 $('#grid').addEventListener('click', (e) => {
   const n = e.target.closest('.hero');
-  if (n) { addHero(+n.dataset.id); $('#search').value = ''; state.search = ''; renderGrid(); }
+  if (!n) return;
+  const id = +n.dataset.id;
+  if (e.altKey && !n.classList.contains('banned')) {
+    addHero(id, 'ban');
+    return;
+  }
+  if (n.classList.contains('banned') && state.mode !== 'pool') {
+    state.bans = state.bans.filter((b) => b !== id);
+    render();
+    return;
+  }
+  addHero(id);
+  $('#search').value = '';
+  state.search = '';
+  renderGrid();
+});
+$('#grid').addEventListener('contextmenu', (e) => {
+  const n = e.target.closest('.hero');
+  if (!n || n.classList.contains('banned')) return;
+  e.preventDefault();
+  addHero(+n.dataset.id, 'enemy');
 });
 $('#search').addEventListener('input', (e) => { state.search = e.target.value; renderGrid(); });
 $('#search').addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
-  document.querySelector('.hero:not(.used):not(.dim)')?.click();
+  document.querySelector('.hero:not(.used):not(.banned):not(.dim)')?.click();
 });
 $('#mode').addEventListener('click', (e) => {
-  const b = e.target.closest('button'); if (!b) return;
-  state.mode = b.dataset.mode;
-  $('#mode').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+  const b = e.target.closest('button');
+  if (b) setMode(b.dataset.mode);
 });
 $('#side').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
@@ -387,12 +426,24 @@ $('#ourSide').addEventListener('click', (e) => {
 });
 $('#shotRun').addEventListener('click', recognize);
 
+// Подсказки под систему: на Mac — ⌥ и ⌘, на Windows — Alt и Ctrl, на телефоне — без клавиш.
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const IS_TOUCH = matchMedia('(hover: none)').matches;
+if (IS_TOUCH) {
+  $('#gridHint').textContent = 'Нажми на пустой слот, чтобы выбрать команду, затем на героев. Кнопки выше — бан и мой пул.';
+  $('#shotHint').innerHTML = '<b>Скриншот драфта</b><br>Нажми, чтобы выбрать картинку из галереи';
+} else {
+  if (IS_MAC) $('#gridHint').textContent = $('#gridHint').textContent.replace('Alt + клик', '⌥ + клик');
+  $('#shotHint').innerHTML = IS_MAC
+    ? '<b>Скриншот драфта</b><br>Сделай скриншот (⌘⇧3), затем вставь сюда через ⌘V, перетащи файл или нажми, чтобы выбрать'
+    : '<b>Скриншот драфта</b><br>Нажми PrtScn или Win + Shift + S, затем вставь сюда через Ctrl + V, перетащи файл или нажми, чтобы выбрать';
+}
+
 // --- Вход через Steam ---
 function renderAccount(error = '') {
   const el = $('#account');
   if (ME?.logged_in) {
-    el.innerHTML = `<a class="btn" href="/me.html">Мой разбор</a>
-      ${ME.avatar ? `<img src="${esc(ME.avatar)}" alt="">` : ''}<span>${esc(ME.name)}</span>
+    el.innerHTML = `${ME.avatar ? `<img src="${esc(ME.avatar)}" alt="">` : ''}<span>${esc(ME.name)}</span>
       <button type="button" id="logout">Выйти</button>`;
     $('#logout').addEventListener('click', async () => {
       await fetch('/auth/logout', { method: 'POST' }).catch(() => {});
