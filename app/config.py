@@ -26,4 +26,8 @@ RECOGNIZE_CONCURRENCY = int(os.getenv("RECOGNIZE_CONCURRENCY", "2"))
 MAX_IMAGE_PIXELS = 40_000_000  # 8K-скриншот — около 33 Мп
 
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+
+# Вход через Steam: подпись cookie сессии и публичный адрес сайта (Render задаёт его сам).
+SESSION_SECRET = os.getenv("SESSION_SECRET", "")
+PUBLIC_URL = (os.getenv("PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024

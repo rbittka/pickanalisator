@@ -4,15 +4,17 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import config, scoring
+from . import config, scoring, steam
 from .data import Stats, Store, portrait_path
 from .limits import SlidingWindow, client_ip
 from .recognize import BadImage, References, build_references, match_top_bar, normalize, open_image
@@ -27,6 +29,8 @@ _refs: tuple[int, References] | None = None
 _recognize_slots = asyncio.Semaphore(config.RECOGNIZE_CONCURRENCY)
 _recognize_per_ip = SlidingWindow(config.RECOGNIZE_PER_IP_MINUTE, 60)
 _analyze_per_ip = SlidingWindow(240, 60)
+_me_per_ip = SlidingWindow(30, 60)
+players = steam.PlayerCache()
 
 
 def stats() -> Stats:
@@ -55,7 +59,7 @@ app = FastAPI(title="Анализатор пиков Dota 2", version="1.0", lif
 
 # Страницы сайта: скрипты и стили только свои, встраивать сайт в чужие фреймы нельзя.
 # /docs грузит Swagger UI с CDN, поэтому для него CSP не ставим.
-CSP = ("default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; "
+CSP = ("default-src 'self'; img-src 'self' blob: data: https://avatars.steamstatic.com; style-src 'self' 'unsafe-inline'; "
        "script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 
 
@@ -93,6 +97,13 @@ async def _too_large(send) -> None:
 
 
 app.add_middleware(BodyLimit, limit=config.MAX_UPLOAD_BYTES + 64 * 1024)
+# В cookie лежит только account_id, подписанный секретом. Без SESSION_SECRET (локально)
+# секрет случайный: после перезапуска сервера придётся войти заново.
+app.add_middleware(
+    SessionMiddleware, secret_key=config.SESSION_SECRET or secrets.token_urlsafe(32),
+    session_cookie="dd_session", max_age=30 * 86400, same_site="lax",
+    https_only=config.PUBLIC_URL.startswith("https://"),
+)
 
 
 @app.middleware("http")
@@ -259,6 +270,64 @@ async def admin_refresh(x_admin_token: str = Header("")):
     # Обновление идёт минуту и больше: запускаем в фоне и сразу отвечаем.
     asyncio.create_task(store.refresh())
     return {"started": True}
+
+
+# --- Вход через Steam ---
+
+def _base_url(request: Request) -> str:
+    # За прокси Render сервер сам видит http://, поэтому адрес берём из настроек.
+    return config.PUBLIC_URL or str(request.base_url).rstrip("/")
+
+
+@app.get("/auth/steam/login")
+def steam_login(request: Request):
+    base = _base_url(request)
+    return RedirectResponse(steam.login_url(base + "/auth/steam/callback", base + "/"))
+
+
+@app.get("/auth/steam/callback")
+async def steam_callback(request: Request):
+    account_id = await steam.verify(dict(request.query_params), _base_url(request) + "/auth/steam/callback")
+    if not account_id:
+        return RedirectResponse("/?login=failed")
+    request.session.clear()
+    request.session["account_id"] = account_id
+    return RedirectResponse("/")
+
+
+@app.post("/auth/logout")
+def logout(request: Request):
+    request.session.clear()
+    return {"ok": True}
+
+
+def _account(request: Request) -> int | None:
+    value = request.session.get("account_id")
+    return value if isinstance(value, int) else None
+
+
+@app.get("/api/me")
+async def me(request: Request):
+    account_id = _account(request)
+    if not account_id:
+        return {"logged_in": False}
+    if not _me_per_ip.hit(client_ip(request)):
+        raise HTTPException(429, "Слишком много запросов, подожди минуту.")
+    return {"logged_in": True, **await players.profile(account_id)}
+
+
+@app.get("/api/me/heroes")
+async def my_heroes(request: Request):
+    """Герои игрока за полгода: игры и победы (из OpenDota)."""
+    account_id = _account(request)
+    if not account_id:
+        raise HTTPException(401, "Нужно войти через Steam.")
+    if not _me_per_ip.hit(client_ip(request)):
+        raise HTTPException(429, "Слишком много запросов, подожди минуту.")
+    heroes = await players.heroes(account_id)
+    if heroes is None:
+        raise HTTPException(503, "OpenDota сейчас не отвечает, попробуй позже.")
+    return {"heroes": heroes}
 
 
 # --- Сайт ---

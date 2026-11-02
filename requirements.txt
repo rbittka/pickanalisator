@@ -5,3 +5,4 @@ pillow>=13.0
 numpy>=2.5
 anthropic>=2.3,<3
 python-multipart>=0.0.33
+itsdangerous>=2.2,<3

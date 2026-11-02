@@ -9,7 +9,14 @@ const state = { ally: [], enemy: [], bans: [], mode: 'ally', side: 'ally', pos: 
 let POOL = [];
 try { POOL = JSON.parse(localStorage.getItem('pool') || '[]').filter((p) => Number.isInteger(p.id)); } catch { POOL = []; }
 function savePool() { try { localStorage.setItem('pool', JSON.stringify(POOL)); } catch { /* приватный режим */ } }
-const poolLevel = (id) => POOL.find((p) => p.id === id)?.level;
+const poolLevel = (id) => POOL.find((p) => p.id === id)?.level || null;
+
+// Вошедший через Steam игрок и его статистика по героям за полгода: id → {games, wins}.
+let ME = null, MYSTATS = new Map();
+const myStat = (id) => {
+  const s = MYSTATS.get(id);
+  return s ? `${s.games} игр · ${(100 * s.wins / s.games).toFixed(0)}%` : '';
+};
 
 const $ = (s) => document.querySelector(s);
 const pp = (x, d = 1) => (x >= 0 ? '+' : '') + (x * 100).toFixed(d);
@@ -175,7 +182,7 @@ function fillPicks(sel, list, badge) {
           ${i ? '' : `<div class="pick-badge">${badge}</div>`}
           <div class="name">${esc(r.name)}</div>
           <div class="sub">${r.pos} · ${POS_NAMES[r.pos]}</div>
-          ${lvl ? `<div class="pick-level">★ твой уровень ${lvl}</div>` : ''}
+          ${lvl || myStat(r.id) ? `<div class="pick-level">★ ${[lvl ? `уровень ${lvl}` : '', myStat(r.id)].filter(Boolean).join(' · ')}</div>` : ''}
         </div>
       </div>
       <ul>${reasons(r)}</ul>
@@ -189,12 +196,14 @@ function fillPicks(sel, list, badge) {
 }
 
 function renderPool() {
-  const items = [...POOL].sort((a, b) => b.level - a.level).filter((p) => heroById.has(p.id));
+  const weight = (p) => (p.level || 0) * 1000 + (MYSTATS.get(p.id)?.games || 0);
+  const items = [...POOL].sort((a, b) => weight(b) - weight(a)).filter((p) => heroById.has(p.id));
   $('#poolHint').hidden = items.length > 0;
   $('#poolList').innerHTML = items.map((p) => {
     const h = heroById.get(p.id);
-    return `<div class="pool-item">${heroImg(h)}<span>${esc(h.name)}</span>
-      <label>ур. <input type="number" min="1" max="30" value="${p.level}" data-level="${p.id}" aria-label="Уровень ${esc(h.name)}"></label>
+    const stat = myStat(p.id);
+    return `<div class="pool-item">${heroImg(h)}<span>${esc(h.name)}</span>${stat ? `<span class="stat">${stat}</span>` : ''}
+      <label>ур. <input type="number" min="1" max="30" value="${p.level || ''}" placeholder="—" data-level="${p.id}" aria-label="Уровень ${esc(h.name)}"></label>
       <button type="button" class="x" data-drop="${p.id}" aria-label="Убрать ${esc(h.name)} из пула">×</button></div>`;
   }).join('');
 }
@@ -240,7 +249,7 @@ function renderGrid() {
   const q = state.search.trim().toLowerCase();
   $('#grid').innerHTML = HEROES.map((h) => {
     const match = !q || h.name.toLowerCase().includes(q) || h.npc.includes(q);
-    const star = poolLevel(h.id) ? '<span class="star" title="В твоём пуле">★</span>' : '';
+    const star = POOL.some((p) => p.id === h.id) ? '<span class="star" title="В твоём пуле">★</span>' : '';
     return `<div class="hero ${taken.has(h.id) ? 'used' : ''} ${match ? '' : 'dim'}" data-id="${h.id}">${heroImg(h)}${star}<div class="nm">${esc(h.name)}</div></div>`;
   }).join('');
 }
@@ -267,7 +276,7 @@ $('#poolList').addEventListener('change', (e) => {
   const id = +e.target.dataset.level;
   const p = POOL.find((x) => x.id === id);
   if (!p) return;
-  p.level = Math.max(1, Math.min(30, Math.round(+e.target.value) || 1));
+  p.level = e.target.value === '' ? null : Math.max(1, Math.min(30, Math.round(+e.target.value) || 1));
   savePool();
   render();
 });
@@ -378,6 +387,60 @@ $('#ourSide').addEventListener('click', (e) => {
 });
 $('#shotRun').addEventListener('click', recognize);
 
+// --- Вход через Steam ---
+function renderAccount(error = '') {
+  const el = $('#account');
+  if (ME?.logged_in) {
+    el.innerHTML = `${ME.avatar ? `<img src="${esc(ME.avatar)}" alt="">` : ''}<span>${esc(ME.name)}</span>
+      <button type="button" id="logout">Выйти</button>`;
+    $('#logout').addEventListener('click', async () => {
+      await fetch('/auth/logout', { method: 'POST' }).catch(() => {});
+      location.reload();
+    });
+  } else {
+    el.innerHTML = (error ? `<span class="err">${esc(error)}</span>` : '')
+      + '<a class="btn" href="/auth/steam/login">Войти через Steam</a>';
+  }
+  $('#poolImport').hidden = !ME?.logged_in;
+}
+
+async function loadMe() {
+  let error = '';
+  if (new URLSearchParams(location.search).get('login') === 'failed') {
+    error = 'Не удалось войти через Steam';
+    history.replaceState(null, '', '/');
+  }
+  try { ME = await api('/api/me'); } catch { ME = null; }
+  renderAccount(error);
+  if (!ME?.logged_in) return;
+  try {
+    const r = await api('/api/me/heroes');
+    MYSTATS = new Map(r.heroes.map((h) => [h.id, h]));
+    if (!MYSTATS.size) {
+      $('#poolStatus').textContent = 'OpenDota не видит твоих матчей. Включи в настройках Dota «Общедоступная история матчей» и сыграй хотя бы одну игру.';
+    }
+  } catch (e) {
+    $('#poolStatus').textContent = e.message;
+  }
+  render();
+}
+
+$('#poolImport').addEventListener('click', () => {
+  // Герои, сыгранные хотя бы 5 раз за полгода, до 15 самых частых. Уровни, что уже стоят, сохраняем.
+  const mine = [...MYSTATS.values()].filter((h) => h.games >= 5 && heroById.has(h.id)).slice(0, 15);
+  if (!mine.length) {
+    $('#poolStatus').textContent = 'Не нашлось героев, сыгранных хотя бы 5 раз за полгода.';
+    return;
+  }
+  let added = 0;
+  for (const h of mine) {
+    if (!POOL.some((p) => p.id === h.id)) { POOL.push({ id: h.id, level: null }); added++; }
+  }
+  savePool();
+  $('#poolStatus').textContent = added ? `Добавлено героев: ${added}. Уровни Dota Plus можно вписать вручную.` : 'Все твои частые герои уже в пуле.';
+  render();
+});
+
 // --- Запуск: пока сервер грузит статистику (после пробуждения ~1 мин), ждём ---
 async function boot() {
   try {
@@ -390,6 +453,7 @@ async function boot() {
       ? 'Загрузи скриншот всего экрана игры или фото монитора: герои определятся автоматически.'
       : 'Загрузи скриншот всего экрана игры: герои определятся по верхней панели.');
     render();
+    loadMe();
   } catch (e) {
     $('#recs').innerHTML = `<div class="empty">${esc(e.message)}</div>`;
     $('#meta').textContent = e.status === 503 ? 'Сервер загружает статистику…' : 'Нет связи с сервером';
